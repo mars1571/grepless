@@ -172,7 +172,7 @@ pub fn deps(what: &str) {
         die(&format!("No block or file {}.", what));
     }
     for p in sorted(&paths) {
-        let ts: Vec<String> = g.file_edges.get(&p).map(|s| sorted(s)).unwrap_or_default();
+        let ts: Vec<String> = g.file_edges.get(&p).map(sorted).unwrap_or_default();
         print(&format!("{} imports {} files of the repository{}", p, ts.len(), if ts.is_empty() { "" } else { ":" }));
         for t in &ts {
             print(&format!("  {}  {}", t, g.main.get(t).cloned().unwrap_or_default()));
@@ -273,7 +273,7 @@ pub fn tests(args: &[String]) {
     sorted_paths.sort();
     for p in &sorted_paths {
         let ids: HashSet<String> = g.by_file.get(p).map(|bs| bs.iter().map(|b| component(&b.id)).collect()).unwrap_or_default();
-        let found = reaching(&g, &[p.clone()], &ids);
+        let found = reaching(&g, std::slice::from_ref(p), &ids);
         for (t, why) in &found {
             chosen.entry(t.clone()).or_insert_with(|| why.clone());
         }

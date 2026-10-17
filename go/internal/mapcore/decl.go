@@ -217,4 +217,5 @@ func DeclarationsIn(p, text string) []Decl {
 	}
 	return out
 }
+
 // @end map.code.declarations

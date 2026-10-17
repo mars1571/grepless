@@ -65,7 +65,7 @@ func init() {
 	for form, exts := range map[string]string{
 		"slash": ".js .mjs .cjs .jsx .ts .tsx .mts .cts .java .kt .kts .scala .groovy .go .rs .swift .c .h .cc .cpp .cxx .hpp .hh .cs .m .mm .php .dart .css .scss .less .proto .zig .d .v",
 		"hash":  ".py .pyi .rb .rake .sh .bash .zsh .fish .pl .pm .r .R .yml .yaml .toml .ps1 .ex .exs .nim .jl .cmake .tf .nix .cr .coffee .mk",
-		"html": ".html .htm .xml .vue .svelte .astro .xhtml", "dash": ".sql .lua .hs .elm .ada .vhd",
+		"html":  ".html .htm .xml .vue .svelte .astro .xhtml", "dash": ".sql .lua .hs .elm .ada .vhd",
 		"semicolon": ".clj .cljs .cljc .edn .el .lisp .scm .rkt", "percent": ".erl .hrl .tex"} {
 		for _, e := range strings.Fields(exts) {
 			EXT[e] = form
@@ -88,9 +88,9 @@ func set(words string) map[string]bool {
 }
 
 // Print and Die: every answer goes through one buffer; a message to stderr ends the run with code 1, as sys.exit does.
-func Print(s string) { out.WriteString(s); out.WriteByte('\n') }
+func Print(s string)            { out.WriteString(s); out.WriteByte('\n') }
 func Printf(f string, a ...any) { fmt.Fprintf(out, f, a...); out.WriteByte('\n') }
-func Flush() { out.Flush() }
+func Flush()                    { out.Flush() }
 func Die(msg string) {
 	Flush()
 	fmt.Fprintln(os.Stderr, msg)
@@ -516,10 +516,22 @@ func ReadFile(p string) string {
 	return strings.ToValidUTF8(string(b), "�")
 }
 
-func IsFile(p string) bool { st, err := os.Stat(filepath.Join(ROOT, p)); return err == nil && st.Mode().IsRegular() }
-func IsDir(p string) bool  { st, err := os.Stat(filepath.Join(ROOT, p)); return err == nil && st.IsDir() }
+func IsFile(p string) bool {
+	st, err := os.Stat(filepath.Join(ROOT, p))
+	return err == nil && st.Mode().IsRegular()
+}
+func IsDir(p string) bool {
+	st, err := os.Stat(filepath.Join(ROOT, p))
+	return err == nil && st.IsDir()
+}
 func Exists(p string) bool { _, err := os.Lstat(filepath.Join(ROOT, p)); return err == nil }
-func SizeOf(p string) int  { st, err := os.Stat(filepath.Join(ROOT, p)); if err != nil { return 0 }; return int(st.Size()) }
+func SizeOf(p string) int {
+	st, err := os.Stat(filepath.Join(ROOT, p))
+	if err != nil {
+		return 0
+	}
+	return int(st.Size())
+}
 
 // Setup resolves the root and reads map.json; it takes --root out of the arguments.
 func Setup(argv []string) []string {
@@ -660,4 +672,5 @@ func CacheFile(prefix string) string {
 	h := sha1.Sum([]byte(ROOT))
 	return filepath.Join(os.TempDir(), "code-map", prefix+"-"+hex.EncodeToString(h[:])[:12]+".json")
 }
+
 // @end map.core.rules

@@ -80,8 +80,8 @@ pub fn brace_end(lines: &[&str], i: usize, most: usize) -> usize {
     let (mut depth, mut seen) = (0i32, false);
     let mut quote: Option<u8> = None;
     let limit = (i - 1 + most).min(lines.len());
-    for k in (i - 1)..limit {
-        let s = lines[k].as_bytes();
+    for (k, line) in lines.iter().enumerate().take(limit).skip(i - 1) {
+        let s = line.as_bytes();
         let mut j = 0;
         while j < s.len() {
             let c = s[j];
@@ -105,7 +105,7 @@ pub fn brace_end(lines: &[&str], i: usize, most: usize) -> usize {
         if quote == Some(b'"') || quote == Some(b'\'') {
             quote = None;
         }
-        if !seen && k > i && !lines[k].trim().is_empty() && !rx(r"^\s*(\{|//|/\*|\*|#)").is_match(lines[k]) {
+        if !seen && k > i && !line.trim().is_empty() && !rx(r"^\s*(\{|//|/\*|\*|#)").is_match(line) {
             return i;
         }
     }
@@ -117,8 +117,7 @@ fn indent_of(s: &str) -> usize { s.len() - s.trim_start_matches([' ', '\t']).len
 /// The last line of an indented body: to the line before the next at the same indent or less.
 pub fn indent_end(lines: &[&str], i: usize, indent: usize) -> usize {
     let mut last = i;
-    for k in i..lines.len() {
-        let s = lines[k];
+    for (k, s) in lines.iter().enumerate().skip(i) {
         if s.trim().is_empty() {
             continue;
         }

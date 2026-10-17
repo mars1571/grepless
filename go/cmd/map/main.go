@@ -8,4 +8,5 @@ import (
 )
 
 func main() { mapcore.Main(os.Args[1:]) }
+
 // @end map.cli.init

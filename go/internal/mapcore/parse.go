@@ -40,12 +40,12 @@ type Import struct {
 }
 
 type Facts struct {
-	Key      string    `json:"key"`
-	Blocks   []*Block  `json:"blocks"`
-	Problems [][2]any  `json:"problems"`
-	Outside  []int     `json:"outside"`
-	Decls    []Decl    `json:"decls"`
-	Imports  []Import  `json:"imports"`
+	Key      string   `json:"key"`
+	Blocks   []*Block `json:"blocks"`
+	Problems [][2]any `json:"problems"`
+	Outside  []int    `json:"outside"`
+	Decls    []Decl   `json:"decls"`
+	Imports  []Import `json:"imports"`
 }
 
 func (f *Facts) problems() []Problem {
@@ -274,4 +274,5 @@ func Everything() ([]*Block, []Problem, []string) {
 	}
 	return all, problems, untagged
 }
+
 // @end map.core.parse

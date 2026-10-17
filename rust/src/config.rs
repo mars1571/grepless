@@ -183,14 +183,8 @@ fn wrap(open: &str, close: &str, parts: Vec<String>, indent: usize, level: usize
 
 pub fn commas(n: usize) -> String {
     let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
+    let groups: Vec<&str> = s.as_bytes().rchunks(3).rev().map(|g| std::str::from_utf8(g).unwrap_or("")).collect();
+    groups.join(",")
 }
 
 /// The lowercase words of a name or a sentence: cartTotal → cart, total; HTMLParser → html, parser.

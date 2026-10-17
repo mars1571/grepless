@@ -108,8 +108,8 @@ pub fn parse(p: &str, text: &str) -> (Vec<Block>, Vec<(usize, String)>, Vec<usiz
     }
     let mut depth = vec![0usize; lines.len() + 1];
     for b in &blocks {
-        for i in b.first..=b.last {
-            depth[i] += 1;
+        for d in &mut depth[b.first..=b.last] {
+            *d += 1;
         }
     }
     let snapshot: Vec<(usize, usize)> = blocks.iter().map(|b| (b.first, b.last)).collect();

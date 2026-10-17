@@ -82,7 +82,10 @@ func (r *Repo) Sections(p string) []Section {
 	if s, ok := r.sections[p]; ok {
 		return s
 	}
-	type head struct{ line, level int; title string }
+	type head struct {
+		line, level int
+		title       string
+	}
 	var heads []head
 	fence := false
 	for k, line := range r.Lines(p) {
@@ -226,6 +229,7 @@ func Declarations(repo *Repo, word string) []DeclAt {
 	}
 	return out
 }
+
 // @end map.ask.repo
 
 // @map map.ask.answer: each kind of question answered whole, and the command reading a call's questions
@@ -236,8 +240,8 @@ type Hit struct {
 }
 
 type skipRange struct {
-	path  string
-	a, b  int
+	path string
+	a, b int
 }
 
 func skipped(skip []skipRange, p string, n int) bool {
@@ -528,6 +532,7 @@ func hasCodeDecls(ds []Decl) bool {
 	}
 	return false
 }
+
 // @end map.ask.answer.file
 
 func answerFiles(repo *Repo, paths []string, about string) {
@@ -934,4 +939,5 @@ func prefixOf(ids map[string]bool, prefix string) bool {
 	}
 	return false
 }
+
 // @end map.ask.answer

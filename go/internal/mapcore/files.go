@@ -316,4 +316,5 @@ func IsTest(p string) bool {
 	}
 	return testNameRx.MatchString(stem + ".")
 }
+
 // @end map.core.files

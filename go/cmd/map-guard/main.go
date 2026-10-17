@@ -8,4 +8,5 @@ import (
 )
 
 func main() { guard.Main(os.Args[1:]) }
+
 // @end map.guard.decide

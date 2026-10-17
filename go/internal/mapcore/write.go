@@ -79,8 +79,19 @@ func IdsIn(text string) map[string]bool {
 	return out
 }
 
-func lastRune(s string) rune  { r := []rune(s); if len(r) == 0 { return 0 }; return r[len(r)-1] }
-func firstRune(s string) rune { for _, r := range s { return r }; return 0 }
+func lastRune(s string) rune {
+	r := []rune(s)
+	if len(r) == 0 {
+		return 0
+	}
+	return r[len(r)-1]
+}
+func firstRune(s string) rune {
+	for _, r := range s {
+		return r
+	}
+	return 0
+}
 
 func docsNaming(comps *Comps) map[string]map[string]bool {
 	var paths []string
@@ -584,4 +595,5 @@ func Problems() ([]Problem, int, int) {
 	SaveCache()
 	return found, len(blocks), len(untagged)
 }
+
 // @end map.core.write

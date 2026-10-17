@@ -349,4 +349,5 @@ func topN(xs []string, n int) string {
 	}
 	return strings.Join(shown, ", ") + more
 }
+
 // @end map.brief.print
