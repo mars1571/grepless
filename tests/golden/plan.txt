@@ -1,0 +1,6 @@
+rc=0
+plan.md: 3 parts
+  1 and 2: at once
+  1 and 3: one after the other: part 3 imports what part 1 changes (src/shop/cart.py)
+  2 and 3: at once
+At once: 1 with 2, 2 with 3 (each agent in a worktree of its own: git worktree add ../<name>-<part> -b <branch>)

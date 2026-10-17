@@ -1,0 +1,59 @@
+{
+ "corpus": {
+  "files": 400,
+  "path": "bench/corpus.py --files 400",
+  "blocks": 2940
+ },
+ "repeat": 3,
+ "implementations": {
+  "python": {
+   "build_cold": 0.5026,
+   "build_warm": 0.2222,
+   "map_matches_python": true,
+   "check": 0.224,
+   "brief": 0.2985,
+   "ask_1": 0.0744,
+   "ask_8": 0.1326,
+   "find": 0.1263,
+   "impact": 0.0792,
+   "guard": 0.0226
+  },
+  "node": {
+   "build_cold": 0.3771,
+   "build_warm": 0.2633,
+   "map_matches_python": true,
+   "check": 0.264,
+   "brief": 0.3046,
+   "ask_1": 0.0632,
+   "ask_8": 0.0769,
+   "find": 0.0678,
+   "impact": 0.0813,
+   "guard": 0.0314
+  },
+  "go": {
+   "build_cold": 0.2252,
+   "build_warm": 0.069,
+   "map_matches_python": true,
+   "check": 0.0686,
+   "brief": 0.105,
+   "ask_1": 0.0276,
+   "ask_8": 0.0911,
+   "find": 0.0923,
+   "impact": 0.0236,
+   "guard": 0.0028
+  },
+  "rust": {
+   "build_cold": 0.1286,
+   "build_warm": 0.0598,
+   "map_matches_python": true,
+   "check": 0.0586,
+   "brief": 0.0904,
+   "ask_1": 0.0272,
+   "ask_8": 0.0387,
+   "find": 0.0354,
+   "impact": 0.0203,
+   "guard": 0.0032
+  }
+ },
+ "source": "bench/run.py on a laptop, the median of 3 runs per command; the corpus is bench/corpus.py --files 400"
+}

@@ -1,0 +1,37 @@
+{
+  "command": "python3 ../python/map.py",
+  "name": "example shop",
+  "holds": {
+    "shop": "the cart, the prices and the discounts",
+    "web": "the page that shows the cart: its script, styles and markup",
+    "tests": "the tests of the shop and of the page"
+  },
+  "recipes": {
+    "new-discount": {
+      "about": "a new kind of discount, from the rule to the page and the tests",
+      "words": "discount rule price percent coupon total",
+      "steps": [
+        [
+          "shop.prices.discounts",
+          "add the rule where the others are, with its name"
+        ],
+        [
+          "shop.cart.totals",
+          "apply it in the total, after the line discounts"
+        ],
+        [
+          "web.cart.render",
+          "show it on its own line of the summary"
+        ],
+        [
+          "tests.cart.discounts",
+          "a test of the rule on a real cart"
+        ],
+        [
+          "docs/CART.md",
+          "say the rule where the discounts are described"
+        ]
+      ]
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+ "baseline": {
+  "calls": 532,
+  "tokens_M": 254.6,
+  "model_min": 94,
+  "tool_min": 141
+ },
+ "steps": [
+  {
+   "step": "make check per change, the whole suite once",
+   "tokens": [
+    -2,
+    -2
+   ],
+   "time": [
+    -26,
+    -26
+   ],
+   "calls": [
+    532,
+    532
+   ]
+  },
+  {
+   "step": "+ reads in rounds (several questions per call)",
+   "tokens": [
+    -43,
+    -33
+   ],
+   "time": [
+    -44,
+    -40
+   ],
+   "calls": [
+    310,
+    363
+   ]
+  },
+  {
+   "step": "+ a session per part of the plan",
+   "tokens": [
+    -81,
+    -77
+   ],
+   "time": [
+    -46,
+    -43
+   ],
+   "calls": [
+    310,
+    363
+   ]
+  }
+ ],
+ "source": "one session of 2026-10-12 replayed call by call at 532 calls; each call's time scaled by its new context",
+ "replayed_unchanged": {
+  "tokens_M": 253.0,
+  "model_min": 95
+ },
+ "whole_suite_runs": 19,
+ "asks": {
+  "calls": 243,
+  "questions": 286,
+  "asked_alone": 154
+ },
+ "context_at_change_start_k": {
+  "fifth": 708,
+  "sixth": 778
+ },
+ "fresh_session_start_k": 60,
+ "not_counted": "starting about ten sessions: a few calls each, about 1% of the tokens and five minutes",
+ "session": "the session of context-per-call.json (716 calls), replayed at the point it stood at 532 calls"
+}

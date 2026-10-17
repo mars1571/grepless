@@ -1,0 +1,5 @@
+rc=0
+2 files import src/web/format.js directly:
+  src/web/cart.js  web.cart
+  tests/format.test.js  tests.format
+Tests that reach it (1): tests/format.test.js

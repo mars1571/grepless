@@ -1,0 +1,271 @@
+{
+ "rows": [
+  {
+   "session": "23461a5a",
+   "day": "2026-10-03",
+   "calls": 26,
+   "read_M": 2.0,
+   "search_read": 5,
+   "via_map": 0,
+   "share_via_map": 0.0,
+   "max_k": 92
+  },
+  {
+   "session": "46dd96b5",
+   "day": "2026-10-03",
+   "calls": 285,
+   "read_M": 122.5,
+   "search_read": 94,
+   "via_map": 45,
+   "share_via_map": 0.48,
+   "max_k": 793
+  },
+  {
+   "session": "be9d8194",
+   "day": "2026-10-03",
+   "calls": 1188,
+   "read_M": 579.0,
+   "search_read": 464,
+   "via_map": 40,
+   "share_via_map": 0.09,
+   "max_k": 965
+  },
+  {
+   "session": "31c76f06",
+   "day": "2026-10-04",
+   "calls": 198,
+   "read_M": 49.8,
+   "search_read": 64,
+   "via_map": 4,
+   "share_via_map": 0.06,
+   "max_k": 399
+  },
+  {
+   "session": "9aa7d9b6",
+   "day": "2026-10-04",
+   "calls": 143,
+   "read_M": 26.0,
+   "search_read": 74,
+   "via_map": 49,
+   "share_via_map": 0.66,
+   "max_k": 296
+  },
+  {
+   "session": "e0c30330",
+   "day": "2026-10-04",
+   "calls": 1467,
+   "read_M": 752.0,
+   "search_read": 780,
+   "via_map": 33,
+   "share_via_map": 0.04,
+   "max_k": 966
+  },
+  {
+   "session": "5b4cf659",
+   "day": "2026-10-07",
+   "calls": 135,
+   "read_M": 30.8,
+   "search_read": 56,
+   "via_map": 8,
+   "share_via_map": 0.14,
+   "max_k": 349
+  },
+  {
+   "session": "c7d1d97a",
+   "day": "2026-10-07",
+   "calls": 756,
+   "read_M": 310.7,
+   "search_read": 282,
+   "via_map": 25,
+   "share_via_map": 0.09,
+   "max_k": 966
+  },
+  {
+   "session": "5ca61382",
+   "day": "2026-10-08",
+   "calls": 378,
+   "read_M": 107.0,
+   "search_read": 162,
+   "via_map": 18,
+   "share_via_map": 0.11,
+   "max_k": 491
+  },
+  {
+   "session": "6bd7d72d",
+   "day": "2026-10-08",
+   "calls": 127,
+   "read_M": 20.0,
+   "search_read": 63,
+   "via_map": 6,
+   "share_via_map": 0.1,
+   "max_k": 259
+  },
+  {
+   "session": "90620cf2",
+   "day": "2026-10-10",
+   "calls": 200,
+   "read_M": 41.5,
+   "search_read": 90,
+   "via_map": 9,
+   "share_via_map": 0.1,
+   "max_k": 354
+  },
+  {
+   "session": "1c50e495",
+   "day": "2026-10-11",
+   "calls": 185,
+   "read_M": 55.7,
+   "search_read": 94,
+   "via_map": 58,
+   "share_via_map": 0.62,
+   "max_k": 543
+  },
+  {
+   "session": "3b7b6454",
+   "day": "2026-10-11",
+   "calls": 240,
+   "read_M": 80.2,
+   "search_read": 112,
+   "via_map": 28,
+   "share_via_map": 0.25,
+   "max_k": 660
+  },
+  {
+   "session": "5785de8f",
+   "day": "2026-10-11",
+   "calls": 282,
+   "read_M": 62.7,
+   "search_read": 113,
+   "via_map": 1,
+   "share_via_map": 0.01,
+   "max_k": 469
+  },
+  {
+   "session": "5d9d3000",
+   "day": "2026-10-11",
+   "calls": 199,
+   "read_M": 56.3,
+   "search_read": 81,
+   "via_map": 4,
+   "share_via_map": 0.05,
+   "max_k": 460
+  },
+  {
+   "session": "6d17859b",
+   "day": "2026-10-11",
+   "calls": 292,
+   "read_M": 95.3,
+   "search_read": 129,
+   "via_map": 12,
+   "share_via_map": 0.09,
+   "max_k": 552
+  },
+  {
+   "session": "763fc45f",
+   "day": "2026-10-11",
+   "calls": 257,
+   "read_M": 103.2,
+   "search_read": 116,
+   "via_map": 5,
+   "share_via_map": 0.04,
+   "max_k": 688
+  },
+  {
+   "session": "87649d92",
+   "day": "2026-10-11",
+   "calls": 234,
+   "read_M": 67.6,
+   "search_read": 118,
+   "via_map": 20,
+   "share_via_map": 0.17,
+   "max_k": 513
+  },
+  {
+   "session": "c2dc2760",
+   "day": "2026-10-11",
+   "calls": 298,
+   "read_M": 120.4,
+   "search_read": 101,
+   "via_map": 12,
+   "share_via_map": 0.12,
+   "max_k": 702
+  },
+  {
+   "session": "c37de249",
+   "day": "2026-10-11",
+   "calls": 199,
+   "read_M": 50.7,
+   "search_read": 82,
+   "via_map": 15,
+   "share_via_map": 0.18,
+   "max_k": 393
+  },
+  {
+   "session": "ff0ffddd",
+   "day": "2026-10-11",
+   "calls": 303,
+   "read_M": 127.9,
+   "search_read": 134,
+   "via_map": 6,
+   "share_via_map": 0.04,
+   "max_k": 716
+  },
+  {
+   "session": "6a790f7d",
+   "day": "2026-10-12",
+   "calls": 716,
+   "read_M": 380.3,
+   "search_read": 388,
+   "via_map": 358,
+   "share_via_map": 0.92,
+   "max_k": 966
+  },
+  {
+   "session": "70df993d",
+   "day": "2026-10-12",
+   "calls": 311,
+   "read_M": 142.6,
+   "search_read": 126,
+   "via_map": 115,
+   "share_via_map": 0.91,
+   "max_k": 965
+  },
+  {
+   "session": "8fa9c42b",
+   "day": "2026-10-12",
+   "calls": 278,
+   "read_M": 119.5,
+   "search_read": 156,
+   "via_map": 122,
+   "share_via_map": 0.78,
+   "max_k": 755
+  },
+  {
+   "session": "d34a9d9c",
+   "day": "2026-10-12",
+   "calls": 1334,
+   "read_M": 623.8,
+   "search_read": 790,
+   "via_map": 606,
+   "share_via_map": 0.77,
+   "max_k": 966
+  }
+ ],
+ "guard_from": "2026-10-12",
+ "source": "the 25 transcripts of the project with 20 or more calls, read with map-sessions.py",
+ "after_guard_questions_per_ask": [
+  1.4,
+  3.8
+ ],
+ "guard_replay": {
+  "sessions": 5,
+  "day": "2026-10-11",
+  "tool_calls": 1148,
+  "refused": 470,
+  "asks_finding_nothing": 35,
+  "code_reads_slipped_through": 2,
+  "reads_kb": 1130,
+  "asks_kb": 1537,
+  "cases_answered_within_next_four_calls": 49
+ }
+}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- @map site.sitemap: the page's one address, for search engines (submitted in Search Console: a project site has no robots.txt of its own) -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://mars1571.github.io/grepless/</loc></url>
+</urlset>

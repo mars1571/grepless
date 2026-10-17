@@ -1,0 +1,12 @@
+rc=0
+new-discount: a new kind of discount, from the rule to the page and the tests.
+1. shop.prices.discounts  src/shop/prices.py:16-30
+   add the rule where the others are, with its name
+2. shop.cart.totals  src/shop/cart.py:24-38
+   apply it in the total, after the line discounts
+3. web.cart.render  src/web/cart.js:1-14
+   show it on its own line of the summary
+4. tests.cart.discounts  tests/test_cart.py:23-39
+   a test of the rule on a real cart
+5. docs/CART.md
+   say the rule where the discounts are described

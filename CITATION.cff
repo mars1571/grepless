@@ -1,0 +1,27 @@
+# @map map.cite: how to cite the repository and its measurements: GitHub's "Cite this repository" reads this file
+cff-version: 1.2.0
+message: "If you use this tool or its measurements, please cite it as below."
+title: "grepless: a code map and a pre-tool hook for AI coding agents"
+type: software
+authors:
+  - alias: mars1571
+repository-code: "https://github.com/mars1571/grepless"
+url: "https://mars1571.github.io/grepless/"
+license: MIT
+abstract: >-
+  A code map for AI coding agents: a one-line tag above each block of code says what the block is for, a tool
+  builds a map from the tags and the code, the agent asks the map a round of questions per call, and a pre-tool
+  hook refuses grep, cat and sed on the code. Implementations in Python, Node, Go and Rust; hooks for Claude Code,
+  OpenAI Codex, Cursor, GitHub Copilot and Gemini CLI. Includes measurements of 113 Claude Code sessions.
+keywords:
+  - AI coding agents
+  - code map
+  - context window
+  - prompt caching
+  - token usage
+  - Claude Code
+  - OpenAI Codex
+  - Cursor
+  - GitHub Copilot
+  - Gemini CLI
+  - AGENTS.md

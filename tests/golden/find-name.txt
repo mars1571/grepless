@@ -1,0 +1,4 @@
+rc=0
+money: function money, declared in web.format.money  src/web/format.js:2-4
+web.format.money                             src/web/format.js:1-9 (9 lines)  cents as money text in the shop's currency, and a quantity with its unit
+tests.format.money                           tests/format.test.js:1-9 (9 lines)  money text with two decimals and the currency, units in the singular and the plural

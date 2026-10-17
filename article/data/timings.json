@@ -1,0 +1,31 @@
+{
+ "repository": "a codebase of 403 code files and 3,074 tagged blocks",
+ "original_tool": {
+  "brief": 0.696,
+  "ask_1": 0.56,
+  "ask_4": 0.675,
+  "ask_8": 0.685,
+  "find": 0.399,
+  "build": 0.59,
+  "check": 0.685,
+  "guard": 0.031
+ },
+ "generic_tool": {
+  "build_cold": 2.018,
+  "build_warm": 0.644,
+  "check": 0.647,
+  "brief": 0.773,
+  "ask_1": 0.242,
+  "ask_8": 0.39,
+  "find": 0.093,
+  "impact": 0.16,
+  "gaps": 0.071,
+  "guard": 0.023
+ },
+ "bytes": {
+  "brief": 6603,
+  "ask_1": 1703,
+  "ask_8": 30089
+ },
+ "source": "measured 2026-10-16 on a laptop, median of three runs; the guard once per call; original_tool is the project's own earlier version of the map, which also reads relations with Node"
+}

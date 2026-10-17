@@ -1,0 +1,46 @@
+{
+ "questions": [
+  {
+   "question": "a drawing routine",
+   "grep_cat_kb": 281.7,
+   "ask_kb": 1.7,
+   "file": "a 282 KB script"
+  },
+  {
+   "question": "an undo handler",
+   "grep_cat_kb": 213.9,
+   "ask_kb": 3.1,
+   "file": "a 213 KB script"
+  },
+  {
+   "question": "a toolbar painter",
+   "grep_cat_kb": 133.9,
+   "ask_kb": 4.2,
+   "file": "a 133 KB script"
+  },
+  {
+   "question": "a page event",
+   "grep_cat_kb": 214.3,
+   "ask_kb": 1.8,
+   "file": "a 213 KB script"
+  },
+  {
+   "question": "a test helper",
+   "grep_cat_kb": 17.8,
+   "ask_kb": 11.0,
+   "file": "an 8 KB test module"
+  },
+  {
+   "question": "a menu action",
+   "grep_cat_kb": 281.6,
+   "ask_kb": 1.6,
+   "file": "a 282 KB script"
+  }
+ ],
+ "lookups_2026_10_03": {
+  "before_chars": 432340,
+  "after_chars": 83850,
+  "questions": 8
+ },
+ "source": "measured on a 403-file codebase, October 2026: one ask against grep -rn <name> src plus the whole file that declares the name; the eight lookups of 2026-10-03 from the same project's records"
+}

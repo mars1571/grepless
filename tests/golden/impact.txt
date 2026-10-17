@@ -1,0 +1,5 @@
+rc=0
+1 files import shop.prices directly:
+  src/shop/cart.py  shop.cart
+1 more import those: tests/test_cart.py
+Tests that reach it (1): tests/test_cart.py

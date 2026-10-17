@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cart</title>
+<link rel="stylesheet" href="cart.css">
+</head>
+<body>
+<!-- @map web.cart.markup: the cart's table, its total line and the coupon field with its button -->
+<table>
+  <tbody id="cart-lines"></tbody>
+  <tfoot><tr><td colspan="2">Total</td><td id="cart-total"></td></tr></tfoot>
+</table>
+<p><input id="coupon" placeholder="Coupon"> <button id="apply-coupon">Apply</button></p>
+<!-- @end web.cart.markup -->
+<script type="module" src="cart.js"></script>
+</body>
+</html>

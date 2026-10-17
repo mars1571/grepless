@@ -1,0 +1,5 @@
+/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+#cart-lines td { padding: 4px 8px; }
+#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+#coupon { width: 10em; text-transform: uppercase; }
+/* @end web.cart.styles */

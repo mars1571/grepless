@@ -1,0 +1,5 @@
+rc=0
+shop.prices.discounts                        src/shop/prices.py:16-30 (15 lines)  the discount rules: a percentage past a quantity, and a coupon on the whole cart
+tests.cart.discounts                         tests/test_cart.py:23-39 (17 lines)  the bulk discount past the quantity, and the coupon on the whole cart
+shop.cart.totals                             src/shop/cart.py:24-38 (15 lines)  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+tests.cart.totals                            tests/test_cart.py:1-20 (20 lines)  a cart's total adds the lines and takes the discounts off

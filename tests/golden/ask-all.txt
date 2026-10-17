@@ -1,0 +1,35 @@
+rc=0
+== coupon
+  on 21 lines
+  docs/CART.md:1-16  # The cart
+4	amount after its discount, then takes the coupon's percentage off the rest.
+  docs/CART.md:13-16  ## The page
+15	The page (`web.cart.render`) draws one row per line and the total, and applies a coupon typed in the
+  map.json
+12	      "words": "discount rule price percent coupon total",
+  shop.cart.model  src/shop/cart.py:1-21  the cart: its lines, adding and removing articles, and what it holds
+10	        self.coupon = None
+  shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+24	# @map shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+30	    """The cart's total in cents: the lines after their discounts, then the coupon's percent off the rest."""
+32	    return subtotal - subtotal * coupon_percent(cart.coupon) // 100
+  shop.prices.discounts  src/shop/prices.py:16-30  the discount rules: a percentage past a quantity, and a coupon on the whole cart
+16	# @map shop.prices.discounts: the discount rules: a percentage past a quantity, and a coupon on the whole cart
+18	COUPONS = {'WELCOME': 5}          # coupon: percent off the whole cart
+28	def coupon_percent(coupon):
+29	    return COUPONS.get((coupon or '').upper(), 0)
+  web.cart.styles  src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+4	#coupon { width: 10em; text-transform: uppercase; }
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+12	  return document.getElementById('coupon').value.trim();
+  web.cart.events  src/web/cart.js:16-20  what the page does on a click: the coupon applied, the cart drawn again
+16	// @map web.cart.events: what the page does on a click: the coupon applied, the cart drawn again
+18	  document.getElementById('apply-coupon').addEventListener('click', () => apply(readCoupon()));
+  web.cart.markup  src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button
+9	<!-- @map web.cart.markup: the cart's table, its total line and the coupon field with its button -->
+14	<p><input id="coupon" placeholder="Coupon"> <button id="apply-coupon">Apply</button></p>
+  tests.cart.discounts  tests/test_cart.py:23-39  the bulk discount past the quantity, and the coupon on the whole cart
+23	# @map tests.cart.discounts: the bulk discount past the quantity, and the coupon on the whole cart
+33	        cart.coupon = 'welcome'

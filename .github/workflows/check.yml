@@ -1,0 +1,32 @@
+# @map ci.check: the unit tests on Python 3.9 and 3.12, the repository's own map current, and the example's map current
+name: check
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python3 -m unittest discover -s tests -v
+      - run: python3 python/map.py check
+      - run: cd example && python3 ../python/map.py check
+      - run: python3 tests/conformance.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 tests/conformance.py --impl "node $PWD/node/map.mjs" --guard "node $PWD/node/map-guard.mjs"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: cd go && go build -o bin/map ./cmd/map && go build -o bin/map-guard ./cmd/map-guard && go vet ./...
+      - run: python3 tests/conformance.py --impl "$PWD/go/bin/map" --guard "$PWD/go/bin/map-guard"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cd rust && cargo build --release
+      - run: python3 tests/conformance.py --impl "$PWD/rust/target/release/map" --guard "$PWD/rust/target/release/map-guard"

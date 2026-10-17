@@ -1,0 +1,3 @@
+rc=0
+src/shop/orders.py: no tags (120 lines; area shop; declares place, Order, __init__, place, Order, __init__ …)
+1 of 9 files carry no tag: docs/TAGGING.md says how to tag them with an agent

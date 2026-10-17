@@ -1,0 +1,21 @@
+rc=0
+brief page money format: 2 of 2 components that match, best first. ask <id or name> reads a block.
+
+web.format  cents as money text in the shop's currency, and a quantity with its unit  [src/web/format.js]
+  parts: web.format.money src/web/format.js:1-9 — cents as money text in the shop's currency, and a quantity with its…
+  declares (2): money, units
+  needs (imports): —; needed by: tests.format, web.cart
+  tests (1): tests/format.test.js
+  changed <date> <hash> the example
+
+web.cart  the cart table and its total, aligned amounts, the coupon field  [src/web/cart.css, src/web/cart.js, src/web/index.html]
+  parts: web.cart.render src/web/cart.js:1-14 — the cart drawn on the page: one row per line, the total, and the…
+         web.cart.events src/web/cart.js:16-20 — what the page does on a click: the coupon applied, the cart drawn…
+  declares (3): render, readCoupon, wire
+  needs (imports): web.format; needed by: —
+  tests (0): none import or name it
+  docs: README.md, docs/CART.md, plan.md
+  changed <date> <hash> the example
+tests that say it: tests.format.money tests/format.test.js:1-9
+Next, one call for the whole first round (add every other question to it): <map> ask web.format.money web.cart.render web.cart.events
+End each change with: <map> check

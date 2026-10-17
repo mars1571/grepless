@@ -1,0 +1,39 @@
+# @map map.core.rules: the Rust crate's manifest: its library, its four binaries, its dependencies and the release profile
+[package]
+name = "code-map"
+version = "1.0.0"
+edition = "2021"
+description = "A code map that coding agents read instead of grepping: the Rust version of python/map.py, the same answers."
+license = "MIT"
+
+[lib]
+name = "mapcore"
+path = "src/lib.rs"
+
+[[bin]]
+name = "map"
+path = "src/bin/map.rs"
+
+[[bin]]
+name = "map-guard"
+path = "src/bin/map-guard.rs"
+
+[[bin]]
+name = "map-coach"
+path = "src/bin/map-coach.rs"
+
+[[bin]]
+name = "map-sessions"
+path = "src/bin/map-sessions.rs"
+
+[dependencies]
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,162 @@
+rc=0
+== shop.cart.totals
+  src/shop/cart.py:24-38  shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+24	# @map shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+25	def line_total(code, quantity):
+26	    return price(code) * quantity - line_discount(code, quantity)
+27	
+28	
+29	def total(cart):
+30	    """The cart's total in cents: the lines after their discounts, then the coupon's percent off the rest."""
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+32	    return subtotal - subtotal * coupon_percent(cart.coupon) // 100
+33	
+34	
+35	def summary(cart):
+36	    """[(code, quantity, amount in cents)] for the page, plus the total."""
+37	    return [(code, q, line_total(code, q)) for code, q in cart.lines.items()], total(cart)
+38	# @end shop.cart.totals
+== total
+  function total: src/shop/cart.py:29-32  in shop.cart.totals
+29	def total(cart):
+30	    """The cart's total in cents: the lines after their discounts, then the coupon's percent off the rest."""
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+32	    return subtotal - subtotal * coupon_percent(cart.coupon) // 100
+  named on 7 other lines
+  web.cart.styles  src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+3	#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+4	export function render(summary, total) {
+8	  document.getElementById('cart-total').textContent = money(total);
+  web.cart.markup  src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button
+9	<!-- @map web.cart.markup: the cart's table, its total line and the coupon field with its button -->
+12	  <tfoot><tr><td colspan="2">Total</td><td id="cart-total"></td></tr></tfoot>
+== src/web/*.js
+  src/web/*.js: 2 files
+    src/web/cart.js  (20 lines)  the cart drawn on the page: one row per line, the total, and the coupon field
+    src/web/format.js  (9 lines)  cents as money text in the shop's currency, and a quantity with its unit
+== docs/CART.md#discounts
+  docs/CART.md:6-12  ## Discounts
+6	## Discounts
+7	
+8	Two rules, both in `src/shop/prices.py`:
+9	
+10	- **Bulk**: ten apples or more take 15 % off each apple.
+11	- **Coupon**: `WELCOME` takes 5 % off the whole cart, after the bulk discounts.
+12	
+== src/shop
+  src/shop: 2 files
+    src/shop/cart.py  (38 lines)  the cart: its lines, adding and removing articles, and what it holds
+    src/shop/prices.py  (30 lines)  the price of each article, by its code, in cents
+== src/shop/cart.py:5-8
+  src/shop/cart.py:5-8  shop.cart.model
+5	class Cart:
+6	    """A cart of lines (code, quantity); a code added twice adds to its line."""
+7	
+8	    def __init__(self):
+== coupon
+  on 8 lines
+  web.cart.styles  src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+4	#coupon { width: 10em; text-transform: uppercase; }
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+12	  return document.getElementById('coupon').value.trim();
+  web.cart.events  src/web/cart.js:16-20  what the page does on a click: the coupon applied, the cart drawn again
+16	// @map web.cart.events: what the page does on a click: the coupon applied, the cart drawn again
+18	  document.getElementById('apply-coupon').addEventListener('click', () => apply(readCoupon()));
+  web.cart.markup  src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button
+9	<!-- @map web.cart.markup: the cart's table, its total line and the coupon field with its button -->
+14	<p><input id="coupon" placeholder="Coupon"> <button id="apply-coupon">Apply</button></p>
+== function render
+  the name render
+  function render: src/web/cart.js:4-9  in web.cart.render
+4	export function render(summary, total) {
+5	  const rows = summary.map(([code, quantity, amount]) =>
+6	    `<tr><td>${code}</td><td>${units(quantity)}</td><td class="amount">${money(amount)}</td></tr>`);
+7	  document.getElementById('cart-lines').innerHTML = rows.join('');
+8	  document.getElementById('cart-total').textContent = money(total);
+9	}
+  named on 4 other lines
+  docs/CART.md:13-16  ## The page
+15	The page (`web.cart.render`) draws one row per line and the total, and applies a coupon typed in the
+  map.json
+23	          "web.cart.render",
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+14	// @end web.cart.render
+== nothing-here-xyz
+  nothing in the code or the docs holds it
+== map.json#holds.shop
+  map.json#holds.shop
+"the cart, the prices and the discounts"
+== web.cart
+  4 blocks under web.cart (one: ask <id>)
+    web.cart.styles                              src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field
+    web.cart.render                              src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+    web.cart.events                              src/web/cart.js:16-20  what the page does on a click: the coupon applied, the cart drawn again
+    web.cart.markup                              src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button
+== src/shop/cart.py:30
+  src/shop/cart.py:24-38  shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+24	# @map shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+25	def line_total(code, quantity):
+26	    return price(code) * quantity - line_discount(code, quantity)
+27	
+28	
+29	def total(cart):
+30	    """The cart's total in cents: the lines after their discounts, then the coupon's percent off the rest."""
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+32	    return subtotal - subtotal * coupon_percent(cart.coupon) // 100
+33	
+34	
+35	def summary(cart):
+36	    """[(code, quantity, amount in cents)] for the page, plus the total."""
+37	    return [(code, q, line_total(code, q)) for code, q in cart.lines.items()], total(cart)
+38	# @end shop.cart.totals
+== #cart-total
+  on 3 lines
+  web.cart.styles  src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field
+3	#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+8	  document.getElementById('cart-total').textContent = money(total);
+  web.cart.markup  src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button
+12	  <tfoot><tr><td colspan="2">Total</td><td id="cart-total"></td></tr></tfoot>
+== money
+  function money: src/web/format.js:2-4  in web.format.money
+2	export function money(cents) {
+3	  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+4	}
+  named on 9 other lines
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+2	import { money, units } from './format.js';
+6	    `<tr><td>${code}</td><td>${units(quantity)}</td><td class="amount">${money(amount)}</td></tr>`);
+8	  document.getElementById('cart-total').textContent = money(total);
+  web.format.money  src/web/format.js:1-9  cents as money text in the shop's currency, and a quantity with its unit
+1	// @map web.format.money: cents as money text in the shop's currency, and a quantity with its unit
+9	// @end web.format.money
+  tests.format.money  tests/format.test.js:1-9  money text with two decimals and the currency, units in the singular and the plural
+1	// @map tests.format.money: money text with two decimals and the currency, units in the singular and the plural
+3	import { money, units } from '../src/web/format.js';
+5	assert.equal(money(1234), '$12.34');
+9	// @end tests.format.money
+== readCoupon(
+  the name readCoupon
+  function readCoupon: src/web/cart.js:11-13  in web.cart.render
+11	export function readCoupon() {
+12	  return document.getElementById('coupon').value.trim();
+13	}
+  named on 1 other lines
+  web.cart.events  src/web/cart.js:16-20  what the page does on a click: the coupon applied, the cart drawn again
+18	  document.getElementById('apply-coupon').addEventListener('click', () => apply(readCoupon()));
+== ten apples
+  docs/CART.md:6-12  ## Discounts
+10	- **Bulk**: ten apples or more take 15 % off each apple.
+== src/web/cart.css
+  src/web/cart.css: 5 lines, whole
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+2	#cart-lines td { padding: 4px 8px; }
+3	#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+4	#coupon { width: 10em; text-transform: uppercase; }
+5	/* @end web.cart.styles */

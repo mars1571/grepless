@@ -1,0 +1,27 @@
+# grepless
+
+> A code map and a pre-tool hook for AI coding agents (Claude Code, OpenAI Codex, Cursor, GitHub Copilot, Gemini CLI). A one-line tag above each block of code says what the block is for; a tool builds a map from the tags and the code; the agent asks the map, a round of questions per call, instead of searching with grep and printing files; a hook refuses grep, cat and sed on the code and names the question to ask instead. The repository also holds measurements of 113 Claude Code sessions: 98.7% of 10.7 billion tokens were context the model had already been sent.
+
+The command is `tools/map`. Tags look like `# @map shop.cart.totals: the totals, each line's discount and the coupon`, closed by `# @end shop.cart.totals`. The same tool exists in Python, Node, Go and Rust, with the same answers. No server, no embeddings, no language server. MIT licence.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/mars1571/grepless/main/README.md): what it is, why, quick start, commands, limits
+- [Method](https://raw.githubusercontent.com/mars1571/grepless/main/docs/METHOD.md): fewer calls over a smaller context: brief, rounds of ask, one session per change, a hook
+- [Tagging](https://raw.githubusercontent.com/mars1571/grepless/main/docs/TAGGING.md): the tag convention, and the prompt that tags a codebase
+- [Commands](https://raw.githubusercontent.com/mars1571/grepless/main/docs/COMMANDS.md): every command and what it prints
+- [Configuration](https://raw.githubusercontent.com/mars1571/grepless/main/docs/CONFIG.md): map.json
+- [Agents](https://raw.githubusercontent.com/mars1571/grepless/main/agents/README.md): the hook's setup for each agent, with the vendors' hook formats
+- [AGENTS.md section](https://raw.githubusercontent.com/mars1571/grepless/main/agents/AGENTS.md): the instructions to paste into a repository's AGENTS.md
+
+## Evidence
+
+- [Article](https://raw.githubusercontent.com/mars1571/grepless/main/article/medium.md): where a coding agent's tokens go, measured over 113 sessions, and what the map changed
+- [Evidence](https://raw.githubusercontent.com/mars1571/grepless/main/docs/EVIDENCE.md): how each number was measured, and its limits
+- [Comparison](https://raw.githubusercontent.com/mars1571/grepless/main/docs/COMPARISON.md): related tools (Aider's repo map, Repomix, Serena, Cursor, Copilot, codemap, agentmap, nogrep and others) as their own pages describe them
+- [Languages](https://raw.githubusercontent.com/mars1571/grepless/main/docs/LANGUAGES.md): the four implementations and their speed
+
+## Optional
+
+- [Data](https://github.com/mars1571/grepless/tree/main/article/data): every measurement as JSON, with its source
+- [Transcript analysis](https://raw.githubusercontent.com/mars1571/grepless/main/article/analysis/transcripts.py): the script that measures Claude Code transcripts as the article does

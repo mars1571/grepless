@@ -1,0 +1,3 @@
+rc=0
+src/shop/cart.py imports 1 files of the repository:
+  src/shop/prices.py  shop.prices

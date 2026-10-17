@@ -1,0 +1,25 @@
+rc=0
+The code map: a map of the areas (map.yaml) and of each area's components (map/<area>.yaml), read from the tags
+in the code; what agents ask it instead of grepping. Start a task with brief, read with ask, end each change with check.
+
+    <map> build            write map.yaml (the areas) and map/<area>.yaml (each area's components)
+    <map> check            the rules, and that the map matches the code (for CI); exit 1 when not
+    <map> brief <words>    where a task starts: the components the words name, their blocks and lines, what
+                                they declare, need and are needed by, their tests, docs and latest commits, then
+                                the first round of questions to ask, in one call
+    <map> ask <question> [<question> …] [--in <paths>] [--all]
+                                the one way to read and locate: every question of a round in one call, each
+                                answered whole: a block id (its code), an identifier (what it is, the code declaring
+                                it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,
+                                docs/X.md#heading, data.json#key, 'src/**/*.css', or any text (every line holding it)
+    <map> find <words>     blocks whose id, purpose or file has every word; an identifier first
+    <map> history <id|file>      the commits that touched a block's lines (git log -L)
+    <map> deps|impact <id|file>  what it imports; what imports it, and the tests to run
+    <map> tests [paths | --changed]   the test files that reach these files, or the changed ones
+    <map> recipe [name]    the steps of a change across layers (map.json, recipes), each at a block
+    <map> plan <plan.md>   which parts of a plan can go to two agents at once
+    <map> gaps [paths]     the files without tags, the lines outside blocks, the blocks to split
+    <map> init             detect the areas, write map.json, print the section for AGENTS.md
+
+Configuration, all of it optional, in map.json at the root (<map> init writes one): docs/CONFIG.md. The same
+tool exists in Python, Node, Go and Rust, with the same answers (tests/conformance.py).

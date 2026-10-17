@@ -1,0 +1,6 @@
+rc=0
+  src/shop/prices.py: 1 test file
+  src/web/format.js: 1 test file
+Run: tests/format.test.js tests/test_cart.py
+  tests/format.test.js  (imports src/web/format.js)
+  tests/test_cart.py  (imports what imports it)

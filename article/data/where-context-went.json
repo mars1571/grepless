@@ -1,0 +1,33 @@
+{
+ "items": [
+  {
+   "what": "grep, sed and cat output",
+   "percent": 37
+  },
+  {
+   "what": "whole files read",
+   "percent": 13
+  },
+  {
+   "what": "build output",
+   "percent": 12
+  },
+  {
+   "what": "their own edits",
+   "percent": 9
+  },
+  {
+   "what": "map",
+   "percent": 7
+  },
+  {
+   "what": "tests",
+   "percent": 6
+  },
+  {
+   "what": "screenshots",
+   "percent": 5
+  }
+ ],
+ "source": "the transcripts of 23 subagents of 2026-10-04 (1,183 M context tokens): context growth attributed to the tool results that entered it, weighted by the calls that re-read it"
+}

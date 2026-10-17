@@ -1,0 +1,2 @@
+rc=0
+new-discount    a new kind of discount, from the rule to the page and the tests

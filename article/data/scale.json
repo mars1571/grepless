@@ -1,0 +1,56 @@
+{
+ "sessions": 113,
+ "main_sessions": 36,
+ "sub_agents": 77,
+ "projects": 5,
+ "calls": 26007,
+ "tokens_B": 10.7,
+ "first_day": "2026-09-21",
+ "last_day": "2026-10-12",
+ "tokens_by_kind_percent": {
+  "cache reads (context already seen)": 98.65,
+  "cache writes (new context)": 1.05,
+  "uncached input": 0.0,
+  "output (what the model wrote)": 0.3
+ },
+ "tokens_by_kind_M": {
+  "cache reads": 10591.8,
+  "cache writes": 112.3,
+  "uncached input": 0.1,
+  "output": 32.2
+ },
+ "cost_shares_percent": {
+  "cache reads": 59.5,
+  "cache writes": 21.6,
+  "uncached input": 0.0,
+  "output": 18.9
+ },
+ "cost_at_list_prices_usd": 3383,
+ "calls_priced_at_their_own_model_percent": 97.0,
+ "prices_usd_per_million": {
+  "claude-opus-5-5": {
+   "input": 4.0,
+   "cache write 5m": 5.0,
+   "cache write 1h": 8.0,
+   "cache read": 0.2,
+   "output": 20.0
+  },
+  "claude-sonnet-5-5": {
+   "input": 2.0,
+   "cache write 5m": 2.5,
+   "cache write 1h": 4.0,
+   "cache read": 0.1,
+   "output": 10.0
+  }
+ },
+ "calls_by_model": {
+  "claude-opus-5-5": 22282,
+  "claude-sonnet-5-5": 2936,
+  "claude-opus-5": 674,
+  "claude-sonnet-5": 44,
+  "claude-fable-5-1": 33,
+  "claude-haiku-4-5-20251001": 21,
+  "<synthetic>": 17
+ },
+ "source": "every Claude Code transcript under the projects folder with 20 or more model calls (sessions and the sub-agents they started); context = input + cache read + cache write tokens of each call"
+}

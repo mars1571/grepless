@@ -1,0 +1,6 @@
+rc=0
+{
+ "agent_message": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask docs/CART.md",
+ "permission": "deny",
+ "user_message": "map-guard: read it through the map (ask). <map> ask docs/CART.md"
+}

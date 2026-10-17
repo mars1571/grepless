@@ -1,0 +1,14 @@
+{
+ "sessions": 25,
+ "calls": 10031,
+ "lines_written": 73211,
+ "tokens_B": 4.13,
+ "work_hours": 37.2,
+ "model_hours": 17.0,
+ "tool_hours": 20.2,
+ "per_1000_lines": {
+  "tokens_M": 56.38,
+  "work_min": 30.48
+ },
+ "source": "the main sessions of one project with 20 or more model calls that wrote code; lines written as Write, Edit, search-and-replace scripts and here-documents count them (rewrites included); work time = the model answering plus the tools running, waits for the person left out"
+}

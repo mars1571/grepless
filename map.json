@@ -1,0 +1,48 @@
+{
+  "command": "python3 python/map.py",
+  "name": "map",
+  "areas": {
+    "python": "map",
+    "node": "map",
+    "go": "map",
+    "rust": "map",
+    "tests": "tests",
+    "article": "article",
+    "bench": "bench",
+    ".github": "ci",
+    "site": "site"
+  },
+  "holds": {
+    "map": "the tool in four languages: the map, ask and brief; the guard for five agents; the coach; the sessions",
+    "tests": "the unit tests: the tool on the example project, the guard on shell lines and on each agent's format",
+    "article": "the Medium article: its figures, the measured data they are drawn from, and the scripts that measure transcripts and draw the figures",
+    "ci": "the GitHub workflow: the tests on two Pythons, this map current, the example's map current",
+    "bench": "the synthetic corpus and the benchmark of the four implementations",
+    "site": "the project's page, published with GitHub Pages: what the tool is, what was measured, the quick start"
+  },
+  "ignore": [
+    "article/src/html/",
+    "example/",
+    "go/bin/",
+    "node/node_modules/",
+    "rust/target/"
+  ],
+  "describe": [
+    [
+      "article/images/*.png",
+      "figure",
+      "a figure of the article, rendered from article/data by article/src/figures.py"
+    ],
+    [
+      "article/images/*.gif",
+      "figure",
+      "the article's animated figure, rendered from article/src/figures.py"
+    ],
+    [
+      "article/data/*.json",
+      "data",
+      "the measured data the article's figures and numbers come from, each with its source"
+    ]
+  ],
+  "strict": true
+}

@@ -1,0 +1,3 @@
+rc=1
+map.yaml: out of date: run <map> build
+12 blocks, 1 problems, 1 files without tags (<map> gaps)

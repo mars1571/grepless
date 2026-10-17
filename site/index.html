@@ -1,0 +1,102 @@
+<!doctype html>
+<!-- @map site.page.head: the project's page: its title, description, preview card and structured data for search engines -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grepless: a code map and a pre-tool hook for AI coding agents</title>
+<meta name="description" content="A code map for AI coding agents: tags say what each block is for, the agent asks the map a round of questions per call instead of grepping, and a hook refuses grep on the code. With measurements of 113 Claude Code sessions.">
+<link rel="canonical" href="https://mars1571.github.io/grepless/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="grepless: a code map and a pre-tool hook for AI coding agents">
+<meta property="og:description" content="98.7% of 10.7 billion tokens in 113 coding-agent sessions were context the model had already read. What filled it, and what a code map and a hook changed.">
+<meta property="og:url" content="https://mars1571.github.io/grepless/">
+<meta property="og:image" content="https://mars1571.github.io/grepless/images/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="grepless: a code map and a pre-tool hook for AI coding agents">
+<meta name="twitter:description" content="98.7% of 10.7 billion tokens in 113 coding-agent sessions were context the model had already read.">
+<meta name="twitter:image" content="https://mars1571.github.io/grepless/images/og-image.png">
+<!-- Search Console: paste its verification meta tag on the line below (a URL-prefix property for this address) -->
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "SoftwareSourceCode", "name": "grepless",
+ "description": "A code map and a pre-tool hook for AI coding agents: tags in the code say what each block is for, a tool builds a map from them, the agent asks the map a round of questions per call, and a hook refuses grep, cat and sed on the code.",
+ "codeRepository": "https://github.com/mars1571/grepless", "url": "https://mars1571.github.io/grepless/",
+ "programmingLanguage": ["Python", "JavaScript", "Go", "Rust"], "license": "https://opensource.org/licenses/MIT",
+ "keywords": "AI coding agents, Claude Code, OpenAI Codex, Cursor, GitHub Copilot, Gemini CLI, AGENTS.md, code map, context window, prompt caching, token usage"}
+</script>
+<style>
+:root{--ink:#111;--text:#333;--mute:#666;--rule:#e6e6e6;--link:#2b62a6;--code:#f6f6f6}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:var(--text);font:18px/1.6 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif}
+main{max-width:760px;margin:0 auto;padding:48px 20px 64px}
+h1{font-size:40px;line-height:1.15;color:var(--ink);margin:0 0 10px;letter-spacing:-.01em}
+h2{font-size:24px;line-height:1.3;color:var(--ink);margin:44px 0 10px}
+p,li{color:var(--text)}
+a{color:var(--link)}
+.lead{font-size:21px;line-height:1.5;color:#222;margin:0}
+.links{margin:16px 0 0;font-size:16px;color:var(--mute)}
+.links a{margin-right:14px}
+figure{margin:28px 0}
+figure img{display:block;width:100%;height:auto;border:1px solid var(--rule)}
+figcaption{font-size:14.5px;color:var(--mute);margin-top:8px}
+pre{background:var(--code);border:1px solid var(--rule);padding:14px 16px;overflow-x:auto;font:14px/1.55 "SF Mono",Menlo,Consolas,monospace}
+code{font-family:"SF Mono",Menlo,Consolas,monospace;font-size:.88em}
+footer{border-top:1px solid var(--rule);margin-top:48px;padding-top:16px;font-size:15px;color:var(--mute)}
+@media (max-width:560px){body{font-size:17px}h1{font-size:32px}.lead{font-size:19px}}
+</style>
+</head>
+<!-- @end site.page.head -->
+<!-- @map site.page.body: the project's page: what the tool is, what was measured, the figures, the quick start and how to cite it -->
+<body>
+<main>
+<h1>grepless</h1>
+<p class="lead">A code map and a pre-tool hook for AI coding agents. A one-line tag above each block of code says what
+the block is for; a tool builds a map from the tags and the code; the agent asks the map, a round of questions per
+call, instead of searching with <code>grep</code>; and a hook refuses <code>grep</code>, <code>cat</code> and
+<code>sed</code> on the code. For Claude Code, OpenAI Codex, Cursor, GitHub Copilot and Gemini CLI.</p>
+<p class="links"><a href="https://github.com/mars1571/grepless">Repository</a><a href="https://github.com/mars1571/grepless/blob/main/article/medium.md">The article</a><a href="https://github.com/mars1571/grepless/blob/main/docs/EVIDENCE.md">The evidence</a><a href="https://github.com/mars1571/grepless/blob/main/docs/COMPARISON.md">Related tools</a></p>
+
+<figure><img src="images/04-how-it-works.png" alt="A diagram: the code, with a tag above each block, is built into a map; the agent asks the map with brief and ask; a dashed path from the agent back to the code, labelled grep, cat and sed, is stopped by a hook that names the ask instead." width="1720" height="1330"></figure>
+
+<h2>What was measured</h2>
+<ul>
+<li>In 113 Claude Code sessions (26,007 calls, 10.7 billion tokens), 98.7% of the tokens were context the model had
+already been sent; the agents' own output was 0.3%. At list prices, re-reading was 59.5% of the cost.</li>
+<li>The model replied three times slower with 700k to 900k tokens of context than with under 100k; among short
+replies alone, about 1.8 times slower.</li>
+<li>Half of what 23 agents re-read on one day was code they had looked up with <code>grep</code>, <code>sed</code>
+and <code>cat</code>, or whole files read to find one thing.</li>
+<li>With instructions alone, the median session sent 10% of its code reads through the map; with the hook, 85%
+(four sessions, different tasks, other changes the same day: an observation, not an experiment).</li>
+<li>Replaying the first 532 calls of one session, with only the affected tests run and reads in rounds, gave 33% to
+43% fewer tokens; with one session per change as
+well, 77% to 81% fewer (estimates).</li>
+</ul>
+
+<figure><img src="images/01-context-per-call.png" alt="An area chart of one coding session's 716 model calls: the context per call grows to 967,000 tokens, is compacted to 61,000, grows to 937,000 and is compacted again; calls of 500,000 tokens or more are shaded darker and read 77% of the session's 380 million tokens." width="1720" height="1178">
+<figcaption>What one 716-call session read is the whole shaded area: 380 million tokens.</figcaption></figure>
+
+<figure><img src="images/06-hook-and-ask.gif" alt="An animated agent session: the agent runs grep for coupon, the hook refuses it and names the ask, and one ask lists the seven blocks that mention the coupon, each with its file and lines." width="1720" height="832">
+<figcaption>The hook at work on the example project.</figcaption></figure>
+
+<h2>Quick start</h2>
+<pre>curl -fsSL https://raw.githubusercontent.com/mars1571/grepless/main/install.sh | sh
+python3 tools/map.py init                  # the areas, and the AGENTS.md text
+python3 tools/map.py build                 # after tagging: writes the map
+python3 tools/map-guard.py install claude  # or codex, cursor, copilot, gemini
+python3 tools/map.py check                 # in CI</pre>
+<p>Python, Node, Go and Rust versions give the same answers; the compiled ones run the hook in about 3 ms per tool
+call. Setup per agent, tagging, and every command: in the
+<a href="https://github.com/mars1571/grepless#readme">README</a>.</p>
+
+<h2>Cite</h2>
+<p>GitHub's "Cite this repository" reads <a href="https://github.com/mars1571/grepless/blob/main/CITATION.cff">CITATION.cff</a>.
+The data behind every figure is in <a href="https://github.com/mars1571/grepless/tree/main/article/data">article/data</a>.</p>
+
+<footer>MIT licence · <a href="https://github.com/mars1571/grepless">github.com/mars1571/grepless</a></footer>
+</main>
+</body>
+<!-- @end site.page.body -->
+</html>
