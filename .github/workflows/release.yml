@@ -1,0 +1,81 @@
+# @map ci.release: on a tag v*, the four programs built in Go and in Rust for macOS, Linux and Windows, packed under stable names and published on the release with their SHA-256 sums
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          cache: false
+      - name: the four programs for each system, cross-compiled
+        run: |
+          for t in darwin/arm64/arm64 darwin/amd64/x86_64 linux/amd64/x86_64 linux/arm64/arm64 windows/amd64/x86_64; do
+            os=${t%%/*} rest=${t#*/}
+            goarch=${rest%/*} arch=${rest#*/}
+            exe=
+            [ "$os" = windows ] && exe=.exe
+            for b in map map-guard map-coach map-sessions; do
+              (cd go && CGO_ENABLED=0 GOOS=$os GOARCH=$goarch go build -trimpath -ldflags='-s -w' -o "../build/$os-$arch/$b$exe" "./cmd/$b")
+            done
+            sh .github/pack.sh go "$os" "$arch" "build/$os-$arch" dist
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: go
+          path: dist/
+          if-no-files-found: error
+  rust:
+    strategy:
+      matrix:
+        include:
+          - {runner: macos-latest, target: aarch64-apple-darwin, os: darwin, arch: arm64}
+          - {runner: macos-latest, target: x86_64-apple-darwin, os: darwin, arch: x86_64}
+          - {runner: ubuntu-latest, target: x86_64-unknown-linux-musl, os: linux, arch: x86_64}
+          - {runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, os: linux, arch: arm64}
+          - {runner: windows-latest, target: x86_64-pc-windows-msvc, os: windows, arch: x86_64}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.os == 'linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: the four programs, static on Linux
+        shell: bash
+        run: |
+          (cd rust && cargo build --release --locked --target ${{ matrix.target }})
+          sh .github/pack.sh rust ${{ matrix.os }} ${{ matrix.arch }} rust/target/${{ matrix.target }}/release dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rust-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+  publish:
+    needs: [go, rust]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS, and every file on the tag's release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum grepless-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          gh release upload "$TAG" grepless-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber

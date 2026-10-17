@@ -82,8 +82,8 @@ well, 77% to 81% fewer (estimates).</li>
 <figcaption>The hook at work on the example project.</figcaption></figure>
 
 <h2>Quick start</h2>
-<pre>curl -fsSL https://raw.githubusercontent.com/mars1571/grepless/main/install.sh | sh
-python3 tools/map.py init                  # the areas, and the AGENTS.md text
+<pre># the tool into tools/, then init: the areas, and the AGENTS.md text
+curl -fsSL https://raw.githubusercontent.com/mars1571/grepless/main/install.sh | sh
 python3 tools/map.py build                 # after tagging: writes the map
 python3 tools/map-guard.py install claude  # or codex, cursor, copilot, gemini
 python3 tools/map.py check                 # in CI</pre>
