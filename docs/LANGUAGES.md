@@ -1,9 +1,11 @@
 # One tool, four languages
 
 The map is written four times, in Python, Node, Go and Rust, and the four give the same answers: the same
-`map.yaml` byte for byte, the same `ask`, `brief`, `find`, `gaps`, `check`, and the same guard for the five
-agents. `tests/conformance.py` runs every implementation against 46 golden answers recorded from the Python
-version, the reference; `bench/run.py` times them on a synthetic codebase and compares the maps they write.
+`map.yaml` byte for byte, the same `ask`, `brief`, `find`, `gaps`, `check`, the same guard and coach for the five
+agents, and the same measurement of a session. `tests/conformance.py` runs every implementation against 46 golden
+answers recorded from the Python version, the reference, and 12 more: the guard on each agent's events (the reads
+it refuses and the work it lets through), the coach on each agent's calls, and `map-sessions` on two synthetic
+transcripts. `bench/run.py` times them on a synthetic codebase and compares the maps they write.
 
 | | Python | Node | Go | Rust |
 |---|---|---|---|---|
@@ -61,6 +63,35 @@ the other three until `make conformance` passes.
 ```sh
 make go            # go/bin/map, map-guard, map-coach, map-sessions
 make rust          # rust/target/release/…
-make conformance   # every built implementation against the golden answers
+make conformance   # the four implementations against the golden answers
+make check         # the whole suite: the unit tests, the maps, go and rust built, the conformance of the four
 make bench         # the four timed; writes article/data/languages.json
+```
+
+## Installing without compiling
+
+The Go and Rust programs need nothing to run; only building them needs `go` or `cargo`. Without it,
+`install.sh --lang go` (or `--lang rust`) downloads the archive for the machine's system from the repository's
+latest release, checks it against the release's `SHA256SUMS` and unpacks it into `tools/`. A tag `v*` publishes
+the release (`.github/workflows/release.yml`), one archive per implementation and system, under names that stay
+the same from one release to the next:
+
+| System | Go | Rust |
+|---|---|---|
+| macOS, Apple silicon | `grepless-go-darwin-arm64.tar.gz` | `grepless-rust-darwin-arm64.tar.gz` |
+| macOS, Intel | `grepless-go-darwin-x86_64.tar.gz` | `grepless-rust-darwin-x86_64.tar.gz` |
+| Linux, x86_64 | `grepless-go-linux-x86_64.tar.gz` | `grepless-rust-linux-x86_64.tar.gz` (static, musl) |
+| Linux, arm64 | `grepless-go-linux-arm64.tar.gz` | `grepless-rust-linux-arm64.tar.gz` (static, musl) |
+| Windows, x86_64 | `grepless-go-windows-x86_64.zip` | `grepless-rust-windows-x86_64.zip` |
+
+Each archive holds `map`, `map-guard`, `map-coach` and `map-sessions` (`.exe` on Windows). By hand, from the root
+of the repository that adopts the map:
+
+```sh
+curl -fsSLO https://github.com/mars1571/grepless/releases/latest/download/grepless-go-linux-x86_64.tar.gz
+curl -fsSLO https://github.com/mars1571/grepless/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS      # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
+mkdir -p tools && tar -xzf grepless-go-linux-x86_64.tar.gz -C tools
+[ -f map.json ] || printf '{\n  "command": "tools/map"\n}\n' > map.json    # or set "command" in the one there
+tools/map init
 ```

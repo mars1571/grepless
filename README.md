@@ -1,5 +1,7 @@
 # grepless
 
+[![check](https://github.com/mars1571/grepless/actions/workflows/check.yml/badge.svg)](https://github.com/mars1571/grepless/actions/workflows/check.yml)
+
 **A code map and a pre-tool hook for AI coding agents.** Every block of code carries a one-line tag that says what
 it is for. A small tool builds a map from the tags and the code. The agent asks the map, a whole round of questions
 per call, instead of searching with `grep` and printing files. A hook refuses `grep`, `cat` and `sed` on the code
@@ -41,28 +43,31 @@ The article: [article/medium.md](article/medium.md). How each number was measure
 ## Quick start
 
 ```sh
-# 1. the tool and its hook into tools/ of your repository (Python by default)
+# 1. the tool and its hook into tools/ of your repository (Python by default), then init: the areas detected
+#    and the section for AGENTS.md printed; map.json names the tool's command and leaves its copies out of the map
 curl -fsSL https://raw.githubusercontent.com/mars1571/grepless/main/install.sh | sh
 #    or compiled, for a hook of about 3 ms per tool call: ... | sh -s -- --lang go    (or rust; node also works)
 
-# 2. the areas detected, map.json written, the section for AGENTS.md printed
-python3 tools/map.py init
-
-# 3. tag the code, one folder at a time, with your agent (docs/TAGGING.md has the prompt)
+# 2. tag the code, one folder at a time, with your agent (docs/TAGGING.md has the prompt)
 python3 tools/map.py gaps                 # what is left to tag
 python3 tools/map.py build                # map.yaml and map/<area>.yaml, read from the tags and the code
 
-# 4. paste the "Finding code" section into AGENTS.md (CLAUDE.md imports it with a line "@AGENTS.md")
-# 5. the hook for your agent: claude | codex | cursor | copilot | gemini
+# 3. paste the "Finding code" section that init printed into AGENTS.md (CLAUDE.md imports it with a line
+#    "@AGENTS.md"); python3 tools/map.py init prints it again
+# 4. the hook for your agent: claude | codex | cursor | copilot | gemini
 python3 tools/map-guard.py install claude
 
-# 6. in CI, so the map never goes stale
+# 5. in CI, so the map never goes stale
 python3 tools/map.py check
 ```
 
-With the Go or Rust version, the commands are `tools/map`, `tools/map-guard` and so on. Then start a task the
-way the section says, with `brief <the task's words>`, and read with rounds of `ask`. Try it first on
-[example/](example/), a tagged shop of eight files:
+With the Go or Rust version, the commands are `tools/map`, `tools/map-guard` and so on. **Without Go or Rust on
+the machine**, `--lang go` and `--lang rust` download the binaries for its system from the
+[latest release](https://github.com/mars1571/grepless/releases/latest) instead (macOS and Linux on arm64 and
+x86_64, Windows on x86_64), check them against the release's `SHA256SUMS` and unpack them into `tools/`; the same
+archives can be unpacked there by hand ([docs/LANGUAGES.md](docs/LANGUAGES.md#installing-without-compiling)).
+Then start a task the way the section says, with `brief <the task's words>`, and read with rounds of `ask`. Try it
+first on [example/](example/), a tagged shop of eight files:
 
 ```sh
 cd example && python3 ../python/map.py brief cart discount
@@ -110,7 +115,8 @@ the two agentmaps, nogrep, ctags, Doxygen and DeepWiki, with sources: [docs/COMP
 ## Four languages, one behaviour
 
 The tool exists in Python (the reference), Node, Go and Rust. The four write byte-identical maps and give the
-same 46 answers in the conformance suite (`tests/conformance.py`); `bench/run.py` times them on a generated
+same 46 answers in the conformance suite (`tests/conformance.py`), and the same 12 on each agent's hook events, the
+coach and the sessions measured; `bench/run.py` times them on a generated
 codebase of 400 files. Go and Rust answer a `brief` in about 0.1 s and run the hook in about 3 ms per tool call;
 Python and Node take about 0.3 s and 23 to 31 ms. Which to pick, and the numbers:
 [docs/LANGUAGES.md](docs/LANGUAGES.md).
@@ -126,7 +132,7 @@ Python and Node take about 0.3 s and 23 to 31 ms. Which to pick, and the numbers
 - **Which programming languages?** Any language with a comment form can be tagged. The relations between
   components come from imports, resolved by path per language.
 - **How long does tagging take?** An afternoon with one agent for a small codebase. In the project where the map
-  was born, twelve agents working on separate files tagged about 1,700 blocks in 170 files in a day; CI has kept
+  was built, twelve agents working on separate files tagged about 1,700 blocks in 170 files in a day; CI has kept
   them since.
 - **How do I know it helps in my repository?** Run `tools/map-sessions.py` before adopting it and again a week
   later. Watch the questions per ask and the share of reads through the map; the tokens follow.
@@ -140,18 +146,32 @@ kept by CI. The hook works where the agent has hooks (the five above); elsewhere
 and they did little on their own. Everything was measured with one owner and one agent product, Claude Code. The
 numbers are those sessions'; the method is yours to check with `map-sessions.py`.
 
+## This repository uses its own method
+
+Whoever works here, with any of the five agents, works under the map, the guard and the coach, as in a repository
+that adopts the tool; the commands point at `python/` where an adopting repository has `tools/`.
+
+| Piece | Where |
+|---|---|
+| the map | `map.json` (the areas), and `map.yaml` and `map/`, written by `python3 python/map.py build` |
+| the instructions | [AGENTS.md](AGENTS.md): the "Finding code" section `init` prints, the method's practices, how to measure a session; `CLAUDE.md` imports it, and `.gemini/settings.json` names it for Gemini CLI (`context.fileName`) |
+| the guard and the coach | `.claude/settings.json`, `.codex/hooks.json`, `.cursor/hooks.json`, `.github/hooks/`, `.gemini/settings.json`, running `python/map-guard.py` and `python/map-coach.py` (Codex and Gemini CLI run them once you trust them: [agents/README.md](agents/README.md)) |
+| the map kept current | `.githooks/pre-commit` before each commit, once `make setup` has pointed git at it; the `check` workflow on every push |
+| the measurement | `python3 python/map-sessions.py`, on this folder's Claude Code transcripts |
+
 ## Repository
 
 | Path | Holds |
 |---|---|
 | `python/` | the reference: `map.py` (the map, `ask`, `brief` and the rest), `map-guard.py` (the hook for five agents, and its `install`), `map-coach.py` (an optional reminder: three reads in a row → ask in one call), `map-sessions.py` (the measurement, from Claude Code's transcripts) |
 | `node/`, `go/`, `rust/` | the same four programs in Node, Go and Rust, with the same answers ([docs/LANGUAGES.md](docs/LANGUAGES.md)) |
-| `install.sh`, `Makefile` | the files into `tools/` of a repository in the language chosen, then `init`; the builds, the tests, the conformance, the benchmark |
+| `install.sh`, `Makefile` | the files into `tools/` of a repository in the language chosen, built or downloaded from a release, then `init`; the builds, the tests, the conformance, the benchmark, `make setup` |
+| `.github/` | the workflows: `check` (the tests, the maps and the four implementations on every push), `pages` (the site), `release` (the Go and Rust binaries on a tag `v*`) |
 | `bench/` | the generated corpus and the benchmark of the four implementations |
 | `agents/` | the section for `AGENTS.md`, and [each agent's setup](agents/README.md) |
 | `docs/` | [the method](docs/METHOD.md), [tagging](docs/TAGGING.md), [the commands](docs/COMMANDS.md), [map.json](docs/CONFIG.md), [the comparison](docs/COMPARISON.md), [the evidence](docs/EVIDENCE.md) |
 | `example/` | a tagged shop of eight files, with its map |
-| `tests/` | `python3 -m unittest discover -s tests`, and `tests/conformance.py` with the answers every implementation must give |
+| `tests/` | `python3 -m unittest discover -s tests`, and `tests/conformance.py` with the answers every implementation must give (`golden/`), on the example project, on each agent's hook events and on two synthetic transcripts (`sessions/`) |
 | `article/` | the article, its figures, the measured data, and the scripts that measure transcripts and draw the figures ([article/README.md](article/README.md)) |
 | `site/` | the project's page, published with GitHub Pages |
 

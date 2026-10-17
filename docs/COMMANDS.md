@@ -100,15 +100,17 @@ blocks to split, and every problem, by file and line.
 
 ### `init`
 
-The areas detected from the folders, `map.json` written with a `holds` to fill in for each, and the "Finding
+The areas detected from the folders, `map.json` written with a `holds` to fill in for each, the next steps (with
+the guard of the same implementation: `tools/map-guard install <agent>` beside `tools/map`), and the "Finding
 code" section printed, to paste into `AGENTS.md`.
 
-## The guard and the measurement
+## The guard, the coach and the measurement
 
 ```
 python3 tools/map-guard.py install <claude|codex|cursor|copilot|gemini>   the hook settings written for that agent
 python3 tools/map-guard.py try 'grep -rn coupon src'                      what the guard would answer (or "goes ahead")
-python3 tools/map-sessions.py [--since 2026-10-01] [session prefix …]     how the sessions went (Claude Code's transcripts)
+python3 tools/map-coach.py [--agent <agent>]                              the coach, a post-tool hook (agents/README.md)
+python3 tools/map-sessions.py [--since 2026-10-01] [session prefix or .jsonl …]   how the sessions went (Claude Code's transcripts)
 ```
 
 What the guard refuses, and what it lets through, in one table:
