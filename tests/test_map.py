@@ -163,12 +163,18 @@ class Example(unittest.TestCase):
 # @end tests.map.brief
 
 
-# @map tests.map.agents: the section agents/AGENTS.md carries is the one init prints
+# @map tests.map.agents: the section agents/AGENTS.md carries, and this repository's own AGENTS.md, is the one init prints
 class AgentsSection(unittest.TestCase):
-    def test_the_pasted_section_is_the_one_init_prints(self):
+    def section(self, cmd):
         text = (REPO / 'python' / 'map.py').read_text()
-        section = text[text.index('AGENTS_SECTION = """') + len('AGENTS_SECTION = """'):text.index('"""\n\n\ndef init(args):')]
-        self.assertIn(section.format(cmd='python3 tools/map.py'), (REPO / 'agents' / 'AGENTS.md').read_text())
+        start = text.index('AGENTS_SECTION = """') + len('AGENTS_SECTION = """')
+        return text[start:text.index('"""', start)].format(cmd=cmd)
+
+    def test_the_pasted_section_is_the_one_init_prints(self):
+        self.assertIn(self.section('python3 tools/map.py'), (REPO / 'agents' / 'AGENTS.md').read_text())
+
+    def test_this_repository_reads_itself_with_the_same_section(self):
+        self.assertIn(self.section('python3 python/map.py'), (REPO / 'AGENTS.md').read_text())
 # @end tests.map.agents
 
 

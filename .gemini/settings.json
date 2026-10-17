@@ -1,0 +1,36 @@
+{
+  "context": {
+    "fileName": [
+      "AGENTS.md",
+      "GEMINI.md"
+    ]
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory",
+        "hooks": [
+          {
+            "name": "map-guard",
+            "type": "command",
+            "command": "python3 \"$GEMINI_PROJECT_DIR/python/map-guard.py\" --agent gemini",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "run_shell_command|replace|write_file",
+        "hooks": [
+          {
+            "name": "map-coach",
+            "type": "command",
+            "command": "python3 \"$GEMINI_PROJECT_DIR/python/map-coach.py\" --agent gemini",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

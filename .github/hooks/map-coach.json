@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 python/map-coach.py --agent copilot",
+        "cwd": ".",
+        "matcher": "bash|powershell|edit|create",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

@@ -10,13 +10,14 @@
     "article": "article",
     "bench": "bench",
     ".github": "ci",
+    ".githooks": "ci",
     "site": "site"
   },
   "holds": {
     "map": "the tool in four languages: the map, ask and brief; the guard for five agents; the coach; the sessions",
-    "tests": "the unit tests: the tool on the example project, the guard on shell lines and on each agent's format",
+    "tests": "the unit tests and the conformance suite: the tool on the example project, the guard, the coach and the sessions on each agent's format",
     "article": "the Medium article: its figures, the measured data they are drawn from, and the scripts that measure transcripts and draw the figures",
-    "ci": "the GitHub workflow: the tests on two Pythons, this map current, the example's map current",
+    "ci": "the GitHub workflows (the checks of the four implementations, the page, the release binaries) and the git hook that keeps the map current",
     "bench": "the synthetic corpus and the benchmark of the four implementations",
     "site": "the project's page, published with GitHub Pages: what the tool is, what was measured, the quick start"
   },

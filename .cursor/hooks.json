@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "python3 python/map-guard.py --agent cursor"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "python3 python/map-guard.py --agent cursor"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 python/map-coach.py --agent cursor",
+        "matcher": "Shell|Write"
+      }
+    ]
+  }
+}
