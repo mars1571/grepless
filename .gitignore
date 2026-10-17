@@ -5,3 +5,4 @@ example/.git/
 article/src/html/
 go/bin/
 rust/target/
+node_modules/

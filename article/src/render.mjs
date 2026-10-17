@@ -1,20 +1,22 @@
 // @map article.render.pages: every figure page rendered with Chrome: a PNG at twice its size for each figure, the preview cards at their own size, a GIF for each scene
-// Usage: node article/src/render.mjs [folder holding node_modules/playwright] [--only name]
-// Playwright comes from node_modules next to this repository, or from the folder given (npm i -D playwright).
-import { createRequire } from 'node:module';
+// Usage: node article/src/render.mjs [--only name] [--out folder, article/images by default]
+// Playwright is article/package.json's dependency (cd article && npm install); the browser is the installed Google
+// Chrome, else Playwright's own Chromium (npx playwright install chromium). article/README.md has the steps.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
 import { encodeGIF } from './gif.mjs';
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
-const only = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
-const where = args.find(a => !a.startsWith('--') && a !== only) || path.join(here, '..', '..');
-const { chromium } = createRequire(path.join(where, 'package.json'))('playwright');
-const pages = path.join(here, 'html'), out = path.join(here, '..', 'images');
+const opt = k => (args.includes(k) ? args[args.indexOf(k) + 1] : null);
+const only = opt('--only');
+const pages = path.join(here, 'html'), out = path.resolve(opt('--out') || path.join(here, '..', 'images'));
 fs.mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch({ channel: 'chrome' }).catch(() => chromium.launch());
+console.log(`${browser.browserType().name()} ${browser.version()}, into ${out}`);
 for (const file of fs.readdirSync(pages).filter(f => f.endsWith('.html')).sort()) {
   const name = file.replace(/\.html$/, '');
   if (only && !name.startsWith(only)) continue;

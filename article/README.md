@@ -8,15 +8,31 @@ measured.
 |---|---|
 | `data/` | the measurements, one JSON file each, with its source and method in the file |
 | `analysis/` | the two scripts that measure Claude Code transcripts: `transcripts.py` (scale, tokens by kind, cost, response time) and `rates.py` (tokens and work time per 1,000 lines written) |
-| `src/` | `figures.py` (each figure as an HTML page, from `data/`), `render.mjs` (the pages to PNG and GIF with Chrome), `gif.mjs` (the GIF encoder, no dependency) |
+| `src/` | `figures.py` (each figure as an HTML page, from `data/`), `render.mjs` (the pages to PNG and GIF with Playwright and Chrome), `gif.mjs` (the GIF encoder, no dependency) |
 | `images/` | the rendered figures: PNG at twice their size, the animated session as a GIF, and the three preview cards |
+| `package.json` | the one dependency of the rendering, Playwright, pinned (`package-lock.json`) |
+
+The measurements, from the transcripts of the project where the map was built (they cannot be run again here;
+`data/` keeps what they gave):
 
 ```sh
 python3 article/analysis/transcripts.py --until 2026-10-12 --exclude <this article's session> --out article/data
 python3 article/analysis/rates.py --project ~/.claude/projects/<project folder> --exclude <…> --out article/data
-python3 article/src/figures.py                        # the pages, in article/src/html/
-node article/src/render.mjs [folder with node_modules/playwright]   # the images, in article/images/
 ```
+
+The figures, from `data/`:
+
+```sh
+python3 article/src/figures.py                   # the pages, in article/src/html/
+cd article && npm install                        # Playwright, into article/node_modules/
+npx playwright install chromium                  # only without Google Chrome, which render.mjs uses when it is installed
+node src/render.mjs                              # the images, into article/images/
+node src/render.mjs --out /tmp/figures           # or into another folder, to compare with article/images/ first
+```
+
+With Playwright 1.64.1 and Chrome 155 on macOS, the render reproduces every file of `images/` byte for byte. Another
+browser version or system can move a few pixels of antialiasing; such a change alone is no reason to replace an
+image.
 
 ## The figures
 

@@ -4,7 +4,7 @@
 render.mjs turns each page into a PNG at twice its size, and the scene into a GIF:
 
     python3 article/src/figures.py
-    node article/src/render.mjs [folder holding node_modules/playwright]
+    cd article && npm install && node src/render.mjs      (article/README.md has the steps)
 
 One design for all of them: a title that says what is plotted, a subtitle with the sample and what it shows, the
 source and the caveats under the plot. Grey is what the sessions did as they ran; blue, the only accent, is the

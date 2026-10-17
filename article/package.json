@@ -1,0 +1,12 @@
+{
+  "name": "grepless-article-figures",
+  "private": true,
+  "description": "The article's figures: src/figures.py writes each as an HTML page from data/, src/render.mjs renders the pages to PNG and GIF with Playwright",
+  "scripts": {
+    "browser": "playwright install chromium",
+    "figures": "python3 src/figures.py && node src/render.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
