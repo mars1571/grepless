@@ -63,7 +63,7 @@ def questions(line):
     for m in re.finditer(r'map(?:\.py|\.mjs)?\s+ask\s+', line):
         rest = line[m.end():]
         end = len(rest)
-        for stop in re.finditer(r'\d?>&\d|\||;|&&|\n', rest):
+        for stop in re.finditer(r'\d?>|\||;|&&|\n', rest):         # a redirection, a pipe or the next step
             end = stop.start()
             break
         words = rest[:end].split()
@@ -164,9 +164,8 @@ def main(args):
     slug = str(ROOT).replace('/', '-').replace('.', '-')
     folders = [f for f in PROJECTS.glob(slug + '*') if f.is_dir()]
     found = sorted((p for f in folders for p in f.glob('*.jsonl')), key=lambda p: p.stat().st_mtime)
-    if named:
-        found = [pathlib.Path(a) if a.endswith('.jsonl') else p for a in named for p in found
-                 if a.endswith('.jsonl') or p.stem.startswith(a)]
+    if named:                                                    # a transcript named by its path is read wherever it is
+        found = [x for a in named for x in ([pathlib.Path(a)] if a.endswith('.jsonl') else [p for p in found if p.stem.startswith(a)])]
     if not found:
         sys.exit(f'No transcripts for {ROOT} under {PROJECTS} (Claude Code writes them there).')
     report([p for p in dict.fromkeys(found) if not since or

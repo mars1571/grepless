@@ -355,6 +355,7 @@ func Quote(words []string) string {
 	}
 	return strings.Join(out, " ")
 }
+
 // @end map.guard.scope
 
 // @map map.guard.commands: a shell line into its commands (heredocs left out, cd followed), and each command's map question
@@ -955,6 +956,7 @@ func ListQuestion(words []string, base string) []string {
 	}
 	return out
 }
+
 // @end map.guard.commands
 
 // @map map.guard.commands.scripts: a script that opens a file of the code only to print it: python -c, node -e, a heredoc fed to them, a scratch script run by name
@@ -1109,6 +1111,7 @@ func ScriptQuestion(line, cwd string) []string {
 	}
 	return unique(out)
 }
+
 // @end map.guard.commands.scripts
 
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
@@ -1313,6 +1316,25 @@ func normalise(agent string, data map[string]any) (string, map[string]any, strin
 	return kind, given, cwd
 }
 
+// either is a when it is set (Python's a or b), else b.
+func either(a, b any) any {
+	if truthy(a) {
+		return a
+	}
+	return b
+}
+
+// folderOf: the folder a search, a glob or a listing names (path, or Gemini's dir_path), the working folder by default.
+func folderOf(given map[string]any) string {
+	if p := str(given["path"]); p != "" {
+		return p
+	}
+	if p := str(given["dir_path"]); p != "" {
+		return p
+	}
+	return "."
+}
+
 // Replacement: the map's question for this call, or "" when the call may go ahead.
 func Replacement(agent string, data map[string]any) string {
 	kind, given, cwd := normalise(agent, data)
@@ -1336,7 +1358,8 @@ func Replacement(agent string, data map[string]any) string {
 				p = str(paths[0])
 			}
 		}
-		return readQuestionTool(p, cwd, given["offset"], given["limit"])
+		// a range is offset and limit, or Gemini's start_line and end_line
+		return readQuestionTool(p, cwd, either(given["offset"], given["start_line"]), either(given["limit"], given["end_line"]))
 	case "grep":
 		if str(given["output_mode"]) == "count" {
 			return ""
@@ -1346,11 +1369,7 @@ func Replacement(agent string, data map[string]any) string {
 			words = append(words, "-i")
 		}
 		words = append(words, "-e", str(given["pattern"]))
-		p := str(given["path"])
-		if p == "" {
-			p = "."
-		}
-		words = append(words, p)
+		words = append(words, folderOf(given))
 		if g := str(given["glob"]); g != "" {
 			words = append(words, "--glob", g)
 		}
@@ -1363,11 +1382,7 @@ func Replacement(agent string, data map[string]any) string {
 		}
 		return ASK + Quote(q)
 	case "glob":
-		p := str(given["path"])
-		if p == "" {
-			p = "."
-		}
-		rel, ok := Inside(p, cwd)
+		rel, ok := Inside(folderOf(given), cwd)
 		if !Mapped(rel, ok, true) {
 			return ""
 		}
@@ -1377,11 +1392,7 @@ func Replacement(agent string, data map[string]any) string {
 		}
 		return ASK + Quote([]string{filepath.Join(dir, str(given["pattern"]))})
 	case "list":
-		p := str(given["path"])
-		if p == "" {
-			p = "."
-		}
-		rel, ok := Inside(p, cwd)
+		rel, ok := Inside(folderOf(given), cwd)
 		if Mapped(rel, ok, true) && rel != "." {
 			return ASK + Quote([]string{rel})
 		}
@@ -1450,7 +1461,7 @@ var settings = map[string]setting{
 		return map[string]any{"version": 1, "hooks": map[string]any{"beforeShellExecution": []any{map[string]any{"command": me + " --agent cursor"}}, "beforeReadFile": []any{map[string]any{"command": me + " --agent cursor"}}}}
 	}},
 	"copilot": {".github/hooks/map-guard.json", func(me string) map[string]any {
-		return map[string]any{"version": 1, "hooks": map[string]any{"preToolUse": []any{map[string]any{"type": "command", "bash": me + " --agent copilot", "timeoutSec": 10}}}}
+		return map[string]any{"version": 1, "hooks": map[string]any{"preToolUse": []any{map[string]any{"type": "command", "bash": me + " --agent copilot", "cwd": ".", "timeoutSec": 10}}}}
 	}},
 	"gemini": {".gemini/settings.json", func(me string) map[string]any {
 		return map[string]any{"hooks": map[string]any{"BeforeTool": []any{map[string]any{"matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory", "hooks": []any{map[string]any{"name": "map-guard", "type": "command", "command": `"$GEMINI_PROJECT_DIR/` + me + `" --agent gemini`, "timeout": 5000}}}}}}
@@ -1502,7 +1513,11 @@ func Install(agent string) {
 	}
 	exe, _ := os.Executable()
 	exe, _ = filepath.EvalSymlinks(exe)
-	me, err := filepath.Rel(ROOT, exe)
+	root, err := filepath.EvalSymlinks(ROOT) // links resolved on both sides, as the program's path is
+	if err != nil {
+		root = ROOT
+	}
+	me, err := filepath.Rel(root, exe)
 	if err != nil {
 		me = exe
 	}
@@ -1560,4 +1575,5 @@ func Main(argv []string) {
 }
 
 var _ = utf8.RuneLen
+
 // @end map.guard.decide

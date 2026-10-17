@@ -23,7 +23,7 @@ var quietRx = regexp.MustCompile(`\d?>&\d|\d?>\s*/dev/null`)
 var notRead = regexp.MustCompile(`\bsed\s+-i|>\s*\S|\bnode\b|\bmake\b|\bnpx\b`)
 var pyCall = regexp.MustCompile(`\bpython3?\s+(\S*)`)
 var askRx = regexp.MustCompile(`map(?:\.py|\.mjs)?\s+ask\s+`)
-var stopRx = regexp.MustCompile(`\d?>&\d|\||;|&&|\n`)
+var stopRx = regexp.MustCompile(`\d?>|\||;|&&|\n`) // a redirection, a pipe or the next step
 
 func init() {
 	for _, w := range strings.Fields("grep egrep fgrep rg ag ack cat sed head tail awk nl less more ls find tree wc cut sort uniq tr xargs column echo printf") {
@@ -97,7 +97,7 @@ func stamp(s string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	return float64(t.UnixNano()) / 1e9, true
+	return float64(t.Unix()) + float64(t.Nanosecond())/1e9, true // exact to the millisecond, as Python's
 }
 
 type call struct {
@@ -274,7 +274,8 @@ func report(paths []string) {
 		}
 		ml, okl := median(lo)
 		mh, okh := median(hi)
-		fmt.Printf("%-19s%6d%8.1f%9d (%3d%%)%8.1f%8d%6d%6.1f%8d%8d%8s%8s\n", name, r[0], float64(r[1])/1e6, r[2], int(100*float64(r[2])/float64(r[0])+0.5), float64(r[3])/1e6, r[4], r[5], perAsk, r[7], r[8], f1(ml, okl), f1(mh, okh))
+		share := fmt.Sprintf("%.0f", float64(r[2])/float64(r[0])*100) // a tie to the even digit, as Python's format
+		fmt.Printf("%-19s%6d%8.1f%9d (%3s%%)%8.1f%8d%6d%6.1f%8d%8d%8s%8s\n", name, r[0], float64(r[1])/1e6, r[2], share, float64(r[3])/1e6, r[4], r[5], perAsk, r[7], r[8], f1(ml, okl), f1(mh, okh))
 	}
 	for _, p := range paths {
 		cs, asked, outside := calls(p)
@@ -436,4 +437,5 @@ func main() {
 	}
 	report(paths)
 }
+
 // @end map.sessions.read

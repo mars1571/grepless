@@ -687,6 +687,12 @@ fn normalise(agent: &str, data: &Map<String, Value>) -> (String, Map<String, Val
     }
 }
 
+/// The folder a search, a glob or a listing names (path, or Gemini's dir_path), the working folder by default.
+fn folder_of(given: &Map<String, Value>) -> String {
+    for k in ["path", "dir_path"] { let p = s(given, k); if !p.is_empty() { return p; } }
+    ".".into()
+}
+
 /// The map's question for this call, or None when the call may go ahead.
 pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
     let (kind, given, cwd) = normalise(agent, data);
@@ -697,28 +703,28 @@ pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
             if p.is_empty() { p = s(&given, "absolute_path"); }
             if p.is_empty() { p = s(&given, "path"); }
             if p.is_empty() { p = given.get("paths").and_then(|a| a.as_array()).and_then(|a| a.first()).and_then(|x| x.as_str()).unwrap_or("").to_string(); }
-            read_question_tool(&p, &cwd, given.get("offset"), given.get("limit"))
+            // a range is offset and limit, or Gemini's start_line and end_line
+            let either = |a: &str, b: &str| if truthy(given.get(a)) { given.get(a) } else { given.get(b) };
+            read_question_tool(&p, &cwd, either("offset", "start_line"), either("limit", "end_line"))
         }
         "grep" => {
             if s(&given, "output_mode") == "count" { return None; }
             let mut words = vec!["rg".to_string()];
             if truthy(given.get("-i")) || truthy(given.get("case_insensitive")) { words.push("-i".into()); }
             words.push("-e".into()); words.push(s(&given, "pattern"));
-            let p = s(&given, "path"); words.push(if p.is_empty() { ".".into() } else { p });
+            words.push(folder_of(&given));
             for k in ["glob", "include"] { let v = s(&given, k); if !v.is_empty() { words.push("--glob".into()); words.push(v); } }
             grep_question(&words, &cwd).map(|q| format!("{}{}", g().ask, quote(&q)))
         }
         "glob" => {
-            let p = s(&given, "path"); let p = if p.is_empty() { ".".to_string() } else { p };
-            let rel = inside(&p, &cwd);
+            let rel = inside(&folder_of(&given), &cwd);
             if !mapped(rel.as_deref(), true) { return None; }
             let dir = rel.filter(|r| r != ".").unwrap_or_default();
             let pat = s(&given, "pattern");
             Some(format!("{}{}", g().ask, quote(&[if dir.is_empty() { pat } else { format!("{}/{}", dir, pat) }])))
         }
         "list" => {
-            let p = s(&given, "path"); let p = if p.is_empty() { ".".to_string() } else { p };
-            let rel = inside(&p, &cwd);
+            let rel = inside(&folder_of(&given), &cwd);
             if mapped(rel.as_deref(), true) && rel.as_deref() != Some(".") { Some(format!("{}{}", g().ask, quote(&[rel.unwrap()]))) } else { None }
         }
         _ => None,
@@ -761,12 +767,13 @@ fn merge(old: &Value, new: &Value) -> Value {
 
 pub fn install(agent: &str) {
     let exe = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()).unwrap_or_default();
-    let me = exe.strip_prefix(&g().root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| exe.to_string_lossy().to_string());
+    let root = std::fs::canonicalize(&g().root).unwrap_or_else(|_| g().root.clone());   // links resolved on both sides
+    let me = exe.strip_prefix(&root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| exe.to_string_lossy().to_string());
     let (path, new) = match agent {
         "claude" => (".claude/settings.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Grep|Glob", "hooks": [{"type": "command", "command": format!("\"$CLAUDE_PROJECT_DIR/{}\"", me)}]}]}})),
         "codex" => (".codex/hooks.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("\"$(git rev-parse --show-toplevel)/{}\" --agent codex", me), "statusMessage": "map-guard"}]}]}})),
         "cursor" => (".cursor/hooks.json", json!({"version": 1, "hooks": {"beforeShellExecution": [{"command": format!("{} --agent cursor", me)}], "beforeReadFile": [{"command": format!("{} --agent cursor", me)}]}})),
-        "copilot" => (".github/hooks/map-guard.json", json!({"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": format!("{} --agent copilot", me), "timeoutSec": 10}]}})),
+        "copilot" => (".github/hooks/map-guard.json", json!({"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": format!("{} --agent copilot", me), "cwd": ".", "timeoutSec": 10}]}})),
         "gemini" => (".gemini/settings.json", json!({"hooks": {"BeforeTool": [{"matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory", "hooks": [{"name": "map-guard", "type": "command", "command": format!("\"$GEMINI_PROJECT_DIR/{}\" --agent gemini", me), "timeout": 5000}]}]}})),
         _ => { eprintln!("install <agent>: one of claude, codex, cursor, copilot, gemini"); std::process::exit(1); }
     };

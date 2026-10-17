@@ -124,6 +124,10 @@ class Agents(unittest.TestCase):
         out = hook({'hook_event_name': 'BeforeTool', 'tool_name': 'read_file', 'tool_input': {'absolute_path': str(ROOT / 'src/shop/cart.py')}, 'cwd': str(ROOT)})
         self.assertTrue(out['reason'].endswith(ASK + 'src/shop/cart.py'))
         self.assertIsNone(hook({'hook_event_name': 'BeforeTool', 'tool_name': 'run_shell_command', 'tool_input': {'command': 'python3 -m unittest'}, 'cwd': str(ROOT)}))
+        ranged = {'file_path': str(ROOT / 'src/shop/cart.py'), 'start_line': 5, 'end_line': 30}            # read_file's range: before an edit
+        self.assertIsNone(hook({'hook_event_name': 'BeforeTool', 'tool_name': 'read_file', 'tool_input': ranged, 'cwd': str(ROOT)}))
+        out = hook({'hook_event_name': 'BeforeTool', 'tool_name': 'grep_search', 'tool_input': {'pattern': 'coupon', 'dir_path': 'src/shop'}, 'cwd': str(ROOT)})
+        self.assertTrue(out['reason'].endswith(ASK + 'coupon --in src/shop'))
 
     def test_bad_input_goes_ahead(self):
         self.assertIsNone(hook('not json'))
@@ -147,6 +151,13 @@ class Agents(unittest.TestCase):
             claude = json.loads((tmp / '.claude' / 'settings.json').read_text())
             self.assertEqual(claude['permissions'], {'deny': ['Bash(git push *)']})                    # what was there is kept
             self.assertEqual(len(claude['hooks']['PreToolUse']), 2)
+            self.assertEqual(claude['hooks']['PreToolUse'][1]['hooks'][0]['command'], 'python3 "$CLAUDE_PROJECT_DIR/map-guard.py"')
+            codex = json.loads((tmp / '.codex' / 'hooks.json').read_text())['hooks']['PreToolUse'][0]['hooks'][0]
+            self.assertEqual(codex['command'], 'python3 "$(git rev-parse --show-toplevel)/map-guard.py" --agent codex')
+            gemini = json.loads((tmp / '.gemini' / 'settings.json').read_text())['hooks']['BeforeTool'][0]['hooks'][0]
+            self.assertEqual(gemini['command'], 'python3 "$GEMINI_PROJECT_DIR/map-guard.py" --agent gemini')
+            copilot = json.loads((tmp / '.github' / 'hooks' / 'map-guard.json').read_text())['hooks']['preToolUse'][0]
+            self.assertEqual(copilot['cwd'], '.')                       # the repository's root, wherever the CLI was started
             subprocess.run(['python3', str(tmp / 'map-guard.py'), 'install', 'claude'], cwd=tmp, capture_output=True, text=True)
             self.assertEqual(len(json.loads((tmp / '.claude' / 'settings.json').read_text())['hooks']['PreToolUse']), 2)   # installed twice: once
         finally:

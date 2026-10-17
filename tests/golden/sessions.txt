@@ -1,0 +1,5 @@
+rc=0
+session             calls  read M     search/read their M via map  asks q/ask outside runs 8+ s <300k s >300k
+2026-10-16 a1b2c3d4    16     4.2       10 ( 62%)     1.2       6     4   1.2       4       1     2.2     7.5
+2026-10-17 b2c3d4e5     2     1.2        2 (100%)     1.2       1     1   2.0       1       0       -     4.5
+all                    18     5.5       12 ( 67%)     2.5       7     5   1.4       5       1     2.2     7.0

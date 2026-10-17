@@ -584,22 +584,23 @@ def replacement(agent, data):
         return None
     if kind == 'shell':
         return shell_question(given.get('command') or given.get('cmd') or '', cwd)
-    if kind == 'read':
+    if kind == 'read':                                      # a range is offset and limit, or Gemini's start_line and end_line
         paths = given.get('paths')
         path = given.get('file_path') or given.get('absolute_path') or given.get('path') or (paths[0] if isinstance(paths, list) and paths else '')
-        return read_question_tool(path, cwd, given.get('offset'), given.get('limit'))
+        return read_question_tool(path, cwd, given.get('offset') or given.get('start_line'), given.get('limit') or given.get('end_line'))
+    folder = given.get('path') or given.get('dir_path') or '.'         # Gemini names the folder dir_path
     if kind == 'grep':
         if given.get('output_mode') == 'count':
             return None
         words = ['rg'] + (['-i'] if given.get('-i') or given.get('case_insensitive') else []) + ['-e', given.get('pattern', '')]
-        words += [given.get('path') or '.'] + (['--glob', given['glob']] if given.get('glob') else []) + (['--glob', given['include']] if given.get('include') else [])
+        words += [folder] + (['--glob', given['glob']] if given.get('glob') else []) + (['--glob', given['include']] if given.get('include') else [])
         q = grep_question(words, cwd)
         return ASK + quote(q) if q else None
     if kind == 'glob':
-        rel = inside(given.get('path') or '.', cwd)
+        rel = inside(folder, cwd)
         return ASK + quote([os.path.join('' if rel in (None, '.') else rel, given.get('pattern', ''))]) if mapped(rel) else None
     if kind == 'list':
-        rel = inside(given.get('path') or '.', cwd)
+        rel = inside(folder, cwd)
         return ASK + quote([rel]) if mapped(rel) and rel != '.' else None
     return None
 
@@ -634,7 +635,7 @@ SETTINGS = {
         'beforeShellExecution': [{'command': f'python3 {me} --agent cursor'}],
         'beforeReadFile': [{'command': f'python3 {me} --agent cursor'}]}}),
     'copilot': ('.github/hooks/map-guard.json', lambda me: {'version': 1, 'hooks': {'preToolUse': [
-        {'type': 'command', 'bash': f'python3 {me} --agent copilot', 'timeoutSec': 10}]}}),
+        {'type': 'command', 'bash': f'python3 {me} --agent copilot', 'cwd': '.', 'timeoutSec': 10}]}}),     # cwd: the repository's root
     'gemini': ('.gemini/settings.json', lambda me: {'hooks': {'BeforeTool': [{'matcher': 'run_shell_command|read_file|read_many_files|grep_search|glob|list_directory', 'hooks': [
         {'name': 'map-guard', 'type': 'command', 'command': f'python3 "$GEMINI_PROJECT_DIR/{me}" --agent gemini', 'timeout': 5000}]}]}}),
 }
@@ -655,7 +656,7 @@ def merge(old, new):
 def install(agent):
     if agent not in SETTINGS:
         sys.exit(f'install <agent>: one of {", ".join(SETTINGS)}')
-    me = os.path.relpath(os.path.abspath(__file__), ROOT).replace(os.sep, '/')
+    me = os.path.relpath(os.path.realpath(__file__), os.path.realpath(ROOT)).replace(os.sep, '/')   # links resolved on both sides
     path, make = SETTINGS[agent]
     full = os.path.join(ROOT, path)
     try:

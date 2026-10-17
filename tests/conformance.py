@@ -9,6 +9,8 @@ language. The Python implementation is the reference; its answers are the golden
     python3 tests/conformance.py --impl go/bin/map --guard go/bin/map-guard
     python3 tests/conformance.py --impl rust/target/release/map --guard rust/target/release/map-guard
 
+With --guard, the hook runs on each agent's events, and the coach and the sessions beside it (map-coach and
+map-sessions in the guard's folder, or --coach and --sessions) run on fixed events and on two synthetic transcripts.
 Lines that depend on the machine (a commit hash, a date, a path) are masked before comparing."""
 import json
 import os
@@ -68,8 +70,102 @@ PLAN = """# A plan
 ## Part 3: the totals
 - Files: src/shop/cart.py
 """
+# @end tests.conformance.cases
 
 
+# @map tests.conformance.hooks: each agent's events, as its hook settings send them: the reads the guard refuses and the work it lets through, the coach's reminder, the sessions measured
+SHELL_DEMO = [   # what the guard refuses on the code, then what it lets through
+    ('grep', 'grep -rn coupon src'), ('cat', 'cat src/shop/prices.py'), ('sed', 'sed -n 1,20p src/web/cart.js'),
+    ('count', 'grep -c coupon src/shop/cart.py && wc -l src/web/*.js'), ('edit', "sed -i 's/TEN/10/' src/shop/prices.py"),
+    ('tests', 'python3 -m unittest discover -s tests'), ('not code', 'cat LICENSE /tmp/map-demo.log'),
+]
+SHELL = {   # each agent's shell event, with the flag its settings give the guard (agents/README.md)
+    'claude': (None, lambda c: {'hook_event_name': 'PreToolUse', 'session_id': 's', 'cwd': '{root}', 'tool_name': 'Bash', 'tool_input': {'command': c}}),
+    'codex': ('codex', lambda c: {'hook_event_name': 'PreToolUse', 'session_id': 's', 'turn_id': 't', 'cwd': '{root}', 'tool_name': 'Bash', 'tool_input': {'command': c}}),
+    'cursor': ('cursor', lambda c: {'hook_event_name': 'beforeShellExecution', 'conversation_id': 'c', 'cursor_version': '1.7', 'workspace_roots': ['{root}'], 'command': c, 'cwd': '{root}', 'sandbox': False}),
+    'copilot': ('copilot', lambda c: {'sessionId': 's', 'timestamp': 1792141200000, 'cwd': '{root}', 'toolName': 'bash', 'toolArgs': json.dumps({'command': c})}),
+    'gemini': ('gemini', lambda c: {'hook_event_name': 'BeforeTool', 'session_id': 's', 'cwd': '{root}', 'timestamp': '2026-10-17T10:00:00Z', 'tool_name': 'run_shell_command', 'tool_input': {'command': c}}),
+}
+TOOL_DEMO = {   # each agent's own tools: a whole file of code, a file that is not code, a range before an edit, a search
+    'claude': [('read code', {'tool_name': 'Read', 'tool_input': {'file_path': '{root}/src/shop/cart.py'}}),
+               ('read not code', {'tool_name': 'Read', 'tool_input': {'file_path': '{root}/LICENSE'}}),
+               ('edit', {'tool_name': 'Edit', 'tool_input': {'file_path': '{root}/src/shop/cart.py', 'old_string': 'a', 'new_string': 'b'}})],
+    'codex': [],
+    'cursor': [('read code', {'hook_event_name': 'beforeReadFile', 'conversation_id': 'c', 'cursor_version': '1.7', 'file_path': '{root}/src/web/cart.js', 'content': '…', 'attachments': []}),
+               ('read not code', {'hook_event_name': 'beforeReadFile', 'conversation_id': 'c', 'cursor_version': '1.7', 'file_path': '{root}/LICENSE', 'content': '…', 'attachments': []})],
+    'copilot': [('view code', {'sessionId': 's', 'toolName': 'view', 'toolArgs': '{"path": "{root}/src/shop/prices.py"}'}),
+                ('view not code', {'sessionId': 's', 'toolName': 'view', 'toolArgs': '{"path": "{root}/LICENSE"}'}),
+                ('edit', {'sessionId': 's', 'toolName': 'edit', 'toolArgs': {'path': '{root}/src/shop/prices.py', 'old_str': 'a', 'new_str': 'b'}})],
+    'gemini': [('read code', {'hook_event_name': 'BeforeTool', 'tool_name': 'read_file', 'tool_input': {'file_path': '{root}/src/shop/cart.py'}}),
+               ('read a range', {'hook_event_name': 'BeforeTool', 'tool_name': 'read_file', 'tool_input': {'file_path': '{root}/src/shop/cart.py', 'start_line': 5, 'end_line': 30}}),
+               ('read not code', {'hook_event_name': 'BeforeTool', 'tool_name': 'read_file', 'tool_input': {'file_path': '{root}/LICENSE'}}),
+               ('search a folder', {'hook_event_name': 'BeforeTool', 'tool_name': 'grep_search', 'tool_input': {'pattern': 'coupon', 'dir_path': 'src/shop'}})],
+}
+MAP_READS = ['python3 tools/map.py brief cart discount', 'python3 tools/map.py ask shop.cart.totals | head -40',
+             'tools/map ask total --in src/shop', 'node tools/map.mjs ask coupon']
+COACH_CASES = [   # (name, --agent, the event of a call); the same session throughout, the reminder at the third read
+    ('claude', None, lambda c, tool='Bash': {'session_id': 'coach-claude', 'hook_event_name': 'PostToolUse', 'tool_name': tool,
+                                             'tool_input': {'command': c} if tool == 'Bash' else {'file_path': c}, 'tool_response': {'stdout': '…'}}),
+    ('codex', 'codex', lambda c, tool='Bash': {'session_id': 'coach-codex', 'turn_id': 't', 'hook_event_name': 'PostToolUse', 'tool_name': tool,
+                                               'tool_input': {'command': c}, 'tool_response': '…'}),     # Bash and apply_patch: command
+    ('cursor', None, lambda c, tool='Shell': {'conversation_id': 'coach-cursor', 'generation_id': 'g', 'cursor_version': '1.7', 'hook_event_name': 'postToolUse',
+                                              'tool_name': tool, 'tool_input': {'command': c} if tool == 'Shell' else {'file_path': c}, 'tool_output': '{}'}),
+    ('copilot', 'copilot', lambda c, tool='bash': {'sessionId': 'coach-copilot', 'timestamp': 1792141200000, 'toolName': tool,
+                                                   'toolArgs': json.dumps({'command': c} if tool == 'bash' else {'path': c}),
+                                                   'toolResult': {'resultType': 'success', 'textResultForLlm': '…'}}),
+    ('gemini', None, lambda c, tool='run_shell_command': {'session_id': 'coach-gemini', 'hook_event_name': 'AfterTool', 'tool_name': tool,
+                                                          'tool_input': {'command': c} if tool == 'run_shell_command' else {'file_path': c}, 'tool_response': {'llmContent': '…'}}),
+]
+EDITS = {'claude': ('Edit', 'src/shop/cart.py'), 'cursor': ('Write', 'src/shop/cart.py'), 'copilot': ('edit', 'src/shop/cart.py'),
+         'gemini': ('replace', 'src/shop/cart.py'), 'codex': ('apply_patch', '*** Begin Patch\n*** Update File: src/shop/cart.py\n*** End Patch')}
+SESSIONS = sorted((HERE / 'sessions').glob('*.jsonl'))   # two synthetic Claude Code transcripts: no real session's data
+
+
+def hook_answers(guard, coach, sessions, root):
+    """The guard on each agent's events, the coach on each agent's calls, the sessions on the two transcripts."""
+    out = {}
+    (root / 'LICENSE').write_text('MIT License\n')                     # a file that is not code
+    for agent, (flag, event) in SHELL.items():
+        steps = [(f'{label}: {c}', event(c)) for label, c in SHELL_DEMO] + TOOL_DEMO[agent]
+        text = ''
+        for label, data in steps:
+            answer, rc = run(guard, root, ['--agent', flag] if flag else [], stdin=json.dumps(data).replace('{root}', str(root)), extra={'MAP_ROOT': str(root)})
+            text += f'== {label} (rc={rc})\n{shown(answer, root)}\n'
+        out['guard-demo-' + agent] = text
+    if coach:
+        state = root.parent / 'coach'
+        for agent, flag, event in COACH_CASES:
+            steps = [(MAP_READS[0], event(MAP_READS[0])), ('the same call again (a second source)', event(MAP_READS[0]))]
+            steps += [(c, event(c)) for c in MAP_READS[1:]]
+            tool, edit = EDITS[agent]
+            steps += [(f'an edit ({tool})', event(edit, tool)), (MAP_READS[1], event(MAP_READS[1]))]
+            if agent == 'claude':
+                steps += [('a subagent', {**event(MAP_READS[2]), 'agent_id': 'sub-1'}), ('not json', 'not json'), ('no session', {'tool_name': 'Bash'})]
+            text = ''
+            for label, data in steps:
+                payload = data if isinstance(data, str) else json.dumps(data)
+                answer, rc = run(coach, root, ['--agent', flag] if flag else [], stdin=payload, extra={'MAP_ROOT': str(root), 'MAP_COACH_DIR': str(state)})
+                text += f'== {label} (rc={rc})\n{shown(answer, root)}\n'
+            out['coach-' + agent] = text
+    if sessions:
+        home = root.parent / 'home'                                    # no transcript of the machine's own
+        home.mkdir(exist_ok=True)
+        for name, args in (('sessions', [str(p) for p in SESSIONS]), ('sessions-since', ['--since', '2026-10-17'] + [str(p) for p in SESSIONS])):
+            text, rc = run(sessions, root, args, extra={'MAP_ROOT': str(root), 'HOME': str(home)})
+            out[name] = f'rc={rc}\n{mask(text, root)}'
+    return out
+
+
+def shown(text, root):
+    """A hook's answer as the golden file keeps it: its JSON sorted and indented, or what it printed, or that it printed nothing."""
+    try:
+        return mask(json.dumps(json.loads(text), sort_keys=True, indent=1), root)
+    except ValueError:
+        return mask(text, root).rstrip('\n') or '(nothing printed: the call goes ahead)'
+# @end tests.conformance.hooks
+
+
+# @map tests.conformance.run: each implementation run on a fresh copy of the example, its answers masked and compared with the golden files, or recorded
 def mask(text, root):
     text = text.replace(str(root), '<root>')
     text = re.sub(r'changed \d{4}-\d{2}-\d{2} [0-9a-f]{7} ', 'changed <date> <hash> ', text)
@@ -98,7 +194,7 @@ def run(impl, root, args, stdin=None, extra=None):
     return (r.stdout + ('' if not r.stderr.strip() else '\n[stderr]\n' + r.stderr), r.returncode)
 
 
-def answers(impl, guard, root):
+def answers(impl, guard, coach, sessions, root):
     out = {}
     for name, args in CASES:
         text, rc = run(impl, root, ['--root', str(root)] + args)
@@ -126,16 +222,26 @@ def answers(impl, guard, root):
             out['guard-' + name] = f'rc={rc}\n{mask(text, root)}'
         text, rc = run(guard, root, ['try', 'ls src/web'], extra={'MAP_ROOT': str(root)})
         out['guard-try'] = f'rc={rc}\n{mask(text, root)}'
+        out.update(hook_answers(guard, coach, sessions, root))
     return out
 
 
+def beside(guard, name):
+    """The program next to the guard: map-guard → map-coach, map-guard.mjs → map-sessions.mjs."""
+    head, found, tail = guard.rpartition('map-guard')
+    return head + name + tail if found else None
+
+
 def main(argv):
-    impl = argv[argv.index('--impl') + 1] if '--impl' in argv else f'python3 {REPO / "python" / "map.py"}'
-    guard = argv[argv.index('--guard') + 1] if '--guard' in argv else (f'python3 {REPO / "python" / "map-guard.py"}' if '--impl' not in argv else None)
+    opt = lambda k: argv[argv.index(k) + 1] if k in argv and argv.index(k) + 1 < len(argv) else None  # noqa: E731
+    impl = opt('--impl') or f'python3 {REPO / "python" / "map.py"}'
+    guard = opt('--guard') or (f'python3 {REPO / "python" / "map-guard.py"}' if '--impl' not in argv else None)
+    coach = opt('--coach') or (beside(guard, 'map-coach') if guard else None)
+    sessions = opt('--sessions') or (beside(guard, 'map-sessions') if guard else None)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix='map-conformance-'))
     try:
         root = setup(tmp)
-        got = answers(impl, guard, root)
+        got = answers(impl, guard, coach, sessions, root)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if '--record' in argv:
@@ -166,4 +272,4 @@ def main(argv):
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))
-# @end tests.conformance.cases
+# @end tests.conformance.run

@@ -24,7 +24,7 @@ fn looks(tool: &str, given: &Value) -> Option<&'static str> {
 
 fn questions(line: &str) -> Vec<usize> {
     let ask = Regex::new(r"map(?:\.py|\.mjs)?\s+ask\s+").unwrap();
-    let stop = Regex::new(r"\d?>&\d|\||;|&&|\n").unwrap();
+    let stop = Regex::new(r"\d?>|\||;|&&|\n").unwrap();   // a redirection, a pipe or the next step
     ask.find_iter(line).map(|m| {
         let rest = &line[m.end()..];
         let end = stop.find(rest).map(|s| s.start()).unwrap_or(rest.len());
@@ -52,7 +52,10 @@ fn stamp(s: &str) -> Option<f64> {
 
 struct Call { ctx: u64, kinds: Vec<Option<&'static str>>, since: Option<f64>, last: Option<f64> }
 
-fn calls(path: &PathBuf) -> (Vec<(u64, Option<&'static str>, Option<f64>)>, Vec<usize>, usize) {
+/// One model call: its context tokens, what it did ("map", "other", or None when it did more than read), its seconds.
+type Row = (u64, Option<&'static str>, Option<f64>);
+
+fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut out: Vec<(String, Call)> = Vec::new();
     let mut asked = Vec::new();
@@ -132,7 +135,8 @@ fn report(paths: &[PathBuf]) {
     let (mut all_lo, mut all_hi) = (Vec::new(), Vec::new());
     let line = |name: &str, r: &[u64; 9], lo: &[f64], hi: &[f64]| {
         let per_ask = if r[5] > 0 { r[6] as f64 / r[5] as f64 } else { 0.0 };
-        println!("{:<19}{:>6}{:>8.1}{:>9} ({:>3}%){:>8.1}{:>8}{:>6}{:>6.1}{:>8}{:>8}{:>8}{:>8}", name, r[0], r[1] as f64 / 1e6, r[2], (100.0 * r[2] as f64 / r[0] as f64).round() as u64, r[3] as f64 / 1e6, r[4], r[5], per_ask, r[7], r[8], f1(median(lo)), f1(median(hi)));
+        let share = format!("{:.0}", r[2] as f64 / r[0] as f64 * 100.0);   // a tie to the even digit, as Python's format
+        println!("{:<19}{:>6}{:>8.1}{:>9} ({:>3}%){:>8.1}{:>8}{:>6}{:>6.1}{:>8}{:>8}{:>8}{:>8}", name, r[0], r[1] as f64 / 1e6, r[2], share, r[3] as f64 / 1e6, r[4], r[5], per_ask, r[7], r[8], f1(median(lo)), f1(median(hi)));
     };
     for p in paths {
         let (cs, asked, outside) = calls(p);
@@ -172,7 +176,7 @@ fn main() {
     }
     let home = std::env::var("HOME").unwrap_or_default();
     let projects = PathBuf::from(home).join(".claude").join("projects");
-    let slug = guard::g().root.to_string_lossy().replace('/', "-").replace('.', "-");
+    let slug = guard::g().root.to_string_lossy().replace(['/', '.'], "-");
     let mut found: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&projects) {
         for e in entries.flatten() {

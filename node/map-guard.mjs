@@ -373,14 +373,15 @@ function replacement(agent, data) {
   const [kind, given, cwd] = normalise(agent, data);
   if (!given || typeof given !== 'object' || Array.isArray(given)) return null;
   if (kind === 'shell') return shellQuestion(given.command || given.cmd || '', cwd);
-  if (kind === 'read') { const paths = given.paths; const p = given.file_path || given.absolute_path || given.path || (Array.isArray(paths) && paths.length ? paths[0] : ''); return readQuestionTool(p, cwd, given.offset, given.limit); }
+  if (kind === 'read') { const paths = given.paths; const p = given.file_path || given.absolute_path || given.path || (Array.isArray(paths) && paths.length ? paths[0] : ''); return readQuestionTool(p, cwd, given.offset || given.start_line, given.limit || given.end_line); }
+  const folder = given.path || given.dir_path || '.';   // Gemini names the folder dir_path
   if (kind === 'grep') {
     if (given.output_mode === 'count') return null;
-    const words = ['rg', ...(given['-i'] || given.case_insensitive ? ['-i'] : []), '-e', given.pattern || '', given.path || '.', ...(given.glob ? ['--glob', given.glob] : []), ...(given.include ? ['--glob', given.include] : [])];
+    const words = ['rg', ...(given['-i'] || given.case_insensitive ? ['-i'] : []), '-e', given.pattern || '', folder, ...(given.glob ? ['--glob', given.glob] : []), ...(given.include ? ['--glob', given.include] : [])];
     const q = grepQuestion(words, cwd); return q ? ASK + quote(q) : null;
   }
-  if (kind === 'glob') { const rel = inside(given.path || '.', cwd); return mapped(rel) ? ASK + quote([path.join(rel === null || rel === '.' ? '' : rel, given.pattern || '')]) : null; }
-  if (kind === 'list') { const rel = inside(given.path || '.', cwd); return mapped(rel) && rel !== '.' ? ASK + quote([rel]) : null; }
+  if (kind === 'glob') { const rel = inside(folder, cwd); return mapped(rel) ? ASK + quote([path.join(rel === null || rel === '.' ? '' : rel, given.pattern || '')]) : null; }
+  if (kind === 'list') { const rel = inside(folder, cwd); return mapped(rel) && rel !== '.' ? ASK + quote([rel]) : null; }
   return null;
 }
 function detect(data) {
@@ -400,7 +401,7 @@ const SETTINGS = {
   claude: ['.claude/settings.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash|Read|Grep|Glob', hooks: [{ type: 'command', command: `node "$CLAUDE_PROJECT_DIR/${me}"` }] }] } })],
   codex: ['.codex/hooks.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "$(git rev-parse --show-toplevel)/${me}" --agent codex`, statusMessage: 'map-guard' }] }] } })],
   cursor: ['.cursor/hooks.json', me => ({ version: 1, hooks: { beforeShellExecution: [{ command: `node ${me} --agent cursor` }], beforeReadFile: [{ command: `node ${me} --agent cursor` }] } })],
-  copilot: ['.github/hooks/map-guard.json', me => ({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: `node ${me} --agent copilot`, timeoutSec: 10 }] } })],
+  copilot: ['.github/hooks/map-guard.json', me => ({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: `node ${me} --agent copilot`, cwd: '.', timeoutSec: 10 }] } })],
   gemini: ['.gemini/settings.json', me => ({ hooks: { BeforeTool: [{ matcher: 'run_shell_command|read_file|read_many_files|grep_search|glob|list_directory', hooks: [{ name: 'map-guard', type: 'command', command: `node "$GEMINI_PROJECT_DIR/${me}" --agent gemini`, timeout: 5000 }] }] } })],
 };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -411,7 +412,7 @@ function merge(old, nu) {
 }
 function install(agent) {
   if (!(agent in SETTINGS)) { process.stderr.write(`install <agent>: one of ${Object.keys(SETTINGS).join(', ')}\n`); process.exit(1); }
-  const me = path.relative(ROOT, fs.realpathSync(process.argv[1])).split(path.sep).join('/');
+  const me = path.relative(fs.realpathSync(ROOT), fs.realpathSync(process.argv[1])).split(path.sep).join('/');   // links resolved on both sides
   const [rel, make] = SETTINGS[agent]; const full = path.join(ROOT, rel);
   let old = {}; try { old = JSON.parse(fs.readFileSync(full, 'utf8')); } catch { old = {}; }
   fs.mkdirSync(path.dirname(full), { recursive: true });

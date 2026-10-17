@@ -1,0 +1,34 @@
+== grep: grep -rn coupon src (rc=0)
+{
+ "agent_message": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask coupon --in src",
+ "permission": "deny",
+ "user_message": "map-guard: read it through the map (ask). <map> ask coupon --in src"
+}
+== cat: cat src/shop/prices.py (rc=0)
+{
+ "agent_message": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/shop/prices.py",
+ "permission": "deny",
+ "user_message": "map-guard: read it through the map (ask). <map> ask src/shop/prices.py"
+}
+== sed: sed -n 1,20p src/web/cart.js (rc=0)
+{
+ "agent_message": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/web/cart.js:1-20",
+ "permission": "deny",
+ "user_message": "map-guard: read it through the map (ask). <map> ask src/web/cart.js:1-20"
+}
+== count: grep -c coupon src/shop/cart.py && wc -l src/web/*.js (rc=0)
+(nothing printed: the call goes ahead)
+== edit: sed -i 's/TEN/10/' src/shop/prices.py (rc=0)
+(nothing printed: the call goes ahead)
+== tests: python3 -m unittest discover -s tests (rc=0)
+(nothing printed: the call goes ahead)
+== not code: cat LICENSE /tmp/map-demo.log (rc=0)
+(nothing printed: the call goes ahead)
+== read code (rc=0)
+{
+ "agent_message": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/web/cart.js",
+ "permission": "deny",
+ "user_message": "map-guard: read it through the map (ask). <map> ask src/web/cart.js"
+}
+== read not code (rc=0)
+(nothing printed: the call goes ahead)

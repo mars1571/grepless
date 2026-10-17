@@ -29,7 +29,7 @@ function questions(line) {
   const out = [];
   for (const m of line.matchAll(/map(?:\.py|\.mjs)?\s+ask\s+/g)) {
     const rest = line.slice(m.index + m[0].length);
-    const stop = /\d?>&\d|\||;|&&|\n/.exec(rest); const words = rest.slice(0, stop ? stop.index : rest.length).trim().split(/\s+/).filter(Boolean);
+    const stop = /\d?>|\||;|&&|\n/.exec(rest); const words = rest.slice(0, stop ? stop.index : rest.length).trim().split(/\s+/).filter(Boolean);
     out.push(words.filter((w, k) => !w.startsWith('--') && (k === 0 || words[k - 1] !== '--in')).length);
   }
   return out;
@@ -59,14 +59,22 @@ function calls(file) {
   return [rows, asked, outside];
 }
 const median = xs => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
-const f1 = x => (x === null ? '-' : x.toFixed(1));
+// x to d decimals as Python prints it: a tie (x exactly halfway at the last digit) goes to the even digit, where toFixed
+// goes up. A double is such a tie only when x * 2^(d+1) is an odd integer.
+function fixed(x, d) {
+  const t = x * 2 ** (d + 1);
+  if (!Number.isInteger(t) || t % 2 === 0) return x.toFixed(d);
+  const n = Math.floor(x * 10 ** d);
+  return ((n % 2 === 0 ? n : n + 1) / 10 ** d).toFixed(d);
+}
+const f1 = x => (x === null ? '-' : fixed(x, 1));
 function report(paths) {
   const total = new Array(9).fill(0); const allLo = [], allHi = [];
   process.stdout.write('session'.padEnd(19) + 'calls'.padStart(6) + 'read M'.padStart(8) + 'search/read'.padStart(16) + 'their M'.padStart(8) + 'via map'.padStart(8)
     + 'asks'.padStart(6) + 'q/ask'.padStart(6) + 'outside'.padStart(8) + 'runs 8+'.padStart(8) + 's <300k'.padStart(8) + 's >300k'.padStart(8) + '\n');
-  const line = (name, r, lo, hi) => process.stdout.write(name.padEnd(19) + String(r[0]).padStart(6) + (r[1] / 1e6).toFixed(1).padStart(8) + String(r[2]).padStart(9)
-    + ` (${Math.round(100 * r[2] / r[0])}%)`.padStart(7) + (r[3] / 1e6).toFixed(1).padStart(8) + String(r[4]).padStart(8) + String(r[5]).padStart(6)
-    + (r[5] ? r[6] / r[5] : 0).toFixed(1).padStart(6) + String(r[7]).padStart(8) + String(r[8]).padStart(8) + f1(lo).padStart(8) + f1(hi).padStart(8) + '\n');
+  const line = (name, r, lo, hi) => process.stdout.write(name.padEnd(19) + String(r[0]).padStart(6) + fixed(r[1] / 1e6, 1).padStart(8) + String(r[2]).padStart(9)
+    + ' (' + (fixed(r[2] / r[0] * 100, 0) + '%').padStart(4) + ')' + fixed(r[3] / 1e6, 1).padStart(8) + String(r[4]).padStart(8) + String(r[5]).padStart(6)
+    + fixed(r[5] ? r[6] / r[5] : 0, 1).padStart(6) + String(r[7]).padStart(8) + String(r[8]).padStart(8) + f1(lo).padStart(8) + f1(hi).padStart(8) + '\n');
   for (const p of paths) {
     const [cs, asked, outside] = calls(p);
     if (!cs.length) continue;
