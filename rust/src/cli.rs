@@ -63,13 +63,27 @@ tool exists in Python, Node, Go and Rust, with the same answers (tests/conforman
 
 pub fn usage() -> String { USAGE.replace("{cmd}", cmd()) }
 
+/// The guard's command beside the map's: python3 tools/map.py → python3 tools/map-guard.py, tools/map → tools/map-guard.
+fn guard_command() -> String {
+    let mut words: Vec<String> = cmd().split_whitespace().map(String::from).collect();
+    let cut = |w: &str| w.rfind('/').map(|i| i + 1).unwrap_or(0);
+    match words.iter().position(|w| matches!(&w[cut(w)..], "map" | "map.py" | "map.mjs")) {
+        Some(k) => {
+            let at = cut(&words[k]);
+            words[k] = format!("{}map-guard{}", &words[k][..at], &words[k][at + 3..]);
+            words.join(" ")
+        }
+        None => "python3 tools/map-guard.py".into(),
+    }
+}
+
 pub fn init(args: &[String]) {
     let mut counts: Vec<(String, usize)> = Vec::new();
     for p in files() {
         let a = area_of(p);
         match counts.iter_mut().find(|(k, _)| *k == a) { Some(e) => e.1 += 1, None => counts.push((a, 1)) }
     }
-    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.sort_by_key(|c| std::cmp::Reverse(c.1));
     let untagged: Vec<&String> = files().iter().filter(|p| facts(p).blocks.is_empty()).collect();
     print(&format!("Root: {} (--root <path> or MAP_ROOT names another)", root().display()));
     if !is_file("map.json") || args.iter().any(|a| a == "--force") {
@@ -94,7 +108,7 @@ pub fn init(args: &[String]) {
     print(&format!("{} code files, {} tagged, {} without tags yet.", files().len(), files().len() - untagged.len(), untagged.len()));
     print("");
     print(&format!("Next: 1. tag the code (docs/TAGGING.md; {} gaps lists what is left), 2. {} build, 3. paste this in AGENTS.md", cmd(), cmd()));
-    print("(CLAUDE.md imports it with a line \"@AGENTS.md\"), 4. install the guard: python3 tools/map-guard.py install <agent>.");
+    print(&format!("(CLAUDE.md imports it with a line \"@AGENTS.md\"), 4. install the guard: {} install <agent>.", guard_command()));
     print("");
     print(&AGENTS_SECTION.replace("{cmd}", cmd()));
     save_cache();

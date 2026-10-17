@@ -1265,6 +1265,15 @@ whole conversation, so questions go in rounds: every question of a round in one 
    \`@end <id>\` when other code follows it; keep purposes true. **End each change with \`{cmd} check\`**, which also
    checks that the map is current (\`{cmd} build\` writes it again).
 `;
+// the guard's command beside the map's: python3 tools/map.py → python3 tools/map-guard.py, tools/map → tools/map-guard
+function guardCommand() {
+  const words = CMD.split(/\s+/).filter(Boolean);
+  for (let k = 0; k < words.length; k++) {
+    const cut = words[k].lastIndexOf('/'), name = words[k].slice(cut + 1);
+    if (['map', 'map.py', 'map.mjs'].includes(name)) { words[k] = words[k].slice(0, cut + 1) + 'map-guard' + name.slice(3); return words.join(' '); }
+  }
+  return 'python3 tools/map-guard.py';
+}
 function init(args) {
   const counts = new Map(); for (const p of files()) { const a = areaOf(p); counts.set(a, (counts.get(a) || 0) + 1); }
   const untagged = files().filter(p => !facts(p).blocks.length);
@@ -1279,7 +1288,7 @@ function init(args) {
   print(`${files().length} code files, ${files().length - untagged.length} tagged, ${untagged.length} without tags yet.`);
   print('');
   print(`Next: 1. tag the code (docs/TAGGING.md; ${CMD} gaps lists what is left), 2. ${CMD} build, 3. paste this in AGENTS.md`);
-  print('(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: python3 tools/map-guard.py install <agent>.');
+  print(`(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: ${guardCommand()} install <agent>.`);
   print('');
   print(AGENTS_SECTION.split('{cmd}').join(CMD));
   saveCache();

@@ -1891,6 +1891,17 @@ whole conversation, so questions go in rounds: every question of a round in one 
 """
 
 
+def guard_command():
+    """The guard's command beside the map's: python3 tools/map.py → python3 tools/map-guard.py, tools/map → tools/map-guard."""
+    words = CMD.split()
+    for k, w in enumerate(words):
+        folder, slash, name = w.rpartition('/')
+        if name in ('map', 'map.py', 'map.mjs'):
+            words[k] = folder + slash + 'map-guard' + name[3:]
+            return ' '.join(words)
+    return 'python3 tools/map-guard.py'
+
+
 def init(args):
     counts = collections.Counter(area_of(p) for p in files())
     untagged = [p for p in files() if not facts(p)['blocks']]
@@ -1907,7 +1918,7 @@ def init(args):
     print(f'{len(files())} code files, {len(files()) - len(untagged)} tagged, {len(untagged)} without tags yet.')
     print()
     print(f'Next: 1. tag the code (docs/TAGGING.md; {CMD} gaps lists what is left), 2. {CMD} build, 3. paste this in AGENTS.md')
-    print('(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: python3 tools/map-guard.py install <agent>.')
+    print(f'(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: {guard_command()} install <agent>.')
     print()
     print(AGENTS_SECTION.format(cmd=CMD))
     save_cache()

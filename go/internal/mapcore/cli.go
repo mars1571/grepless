@@ -58,6 +58,20 @@ const usageText = "The code map: a map of the areas (map.yaml) and of each area'
 
 func Usage() string { return strings.ReplaceAll(usageText, "{cmd}", CMD) }
 
+// guardCommand: the guard's command beside the map's (python3 tools/map.py → python3 tools/map-guard.py, tools/map → tools/map-guard).
+func guardCommand() string {
+	words := strings.Fields(CMD)
+	for k, w := range words {
+		cut := strings.LastIndex(w, "/")
+		name := w[cut+1:]
+		if name == "map" || name == "map.py" || name == "map.mjs" {
+			words[k] = w[:cut+1] + "map-guard" + name[3:]
+			return strings.Join(words, " ")
+		}
+	}
+	return "python3 tools/map-guard.py"
+}
+
 func Init(args []string) {
 	counts := map[string]int{}
 	var order []string
@@ -114,7 +128,7 @@ func Init(args []string) {
 	Printf("%d code files, %d tagged, %d without tags yet.", len(Files()), len(Files())-len(untagged), len(untagged))
 	Print("")
 	Printf("Next: 1. tag the code (docs/TAGGING.md; %s gaps lists what is left), 2. %s build, 3. paste this in AGENTS.md", CMD, CMD)
-	Print(`(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: python3 tools/map-guard.py install <agent>.`)
+	Printf(`(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: %s install <agent>.`, guardCommand())
 	Print("")
 	Print(strings.ReplaceAll(agentsSection, "{cmd}", CMD))
 	SaveCache()
@@ -192,4 +206,5 @@ func Main(argv []string) {
 	}
 	Flush()
 }
+
 // @end map.cli.init
