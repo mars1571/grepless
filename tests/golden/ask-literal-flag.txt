@@ -1,0 +1,11 @@
+rc=0
+== shop.cart.totals
+  README.md:1-12  # Example: a tagged shop
+9	<map> ask shop.cart.totals total 'src/web/cart.js' 'docs/CART.md#discounts'
+  docs/CART.md:1-16  # The cart
+3	A cart holds lines of articles (`shop.cart.model`). Its total (`shop.cart.totals`) adds each line's
+  map.json
+19	          "shop.cart.totals",
+  shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+24	# @map shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+38	# @end shop.cart.totals

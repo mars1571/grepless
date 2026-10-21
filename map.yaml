@@ -9,9 +9,9 @@ areas:
   article: {holds: "the Medium article: its figures, the measured data they are drawn from, and the scripts that measure transcripts and draw the figures", components: 4, files: 5, blocks: 21, map: map/article.yaml, needs: {}, needed_by: {}}
   bench: {holds: "the synthetic corpus and the benchmark of the four implementations", components: 2, files: 2, blocks: 2, map: map/bench.yaml, needs: {}, needed_by: {}}
   ci: {holds: "the GitHub workflows (the checks of the four implementations, the page, the release binaries) and the git hook that keeps the map current", components: 4, files: 5, blocks: 5, map: map/ci.yaml, needs: {}, needed_by: {}}
-  map: {holds: "the tool in four languages: the map, ask and brief; the guard for five agents; the coach; the sessions", components: 11, files: 43, blocks: 86, map: map/map.yaml, needs: {}, needed_by: {}}
+  map: {holds: "the tool in four languages: the map, ask and brief; the guard for five agents; the coach; the sessions", components: 11, files: 43, blocks: 107, map: map/map.yaml, needs: {}, needed_by: {}}
   site: {holds: "the project's page, published with GitHub Pages: what the tool is, what was measured, the quick start", components: 2, files: 2, blocks: 3, map: map/site.yaml, needs: {}, needed_by: {}}
-  tests: {holds: "the unit tests and the conformance suite: the tool on the example project, the guard, the coach and the sessions on each agent's format", components: 3, files: 3, blocks: 9, map: map/tests.yaml, needs: {}, needed_by: {}}
+  tests: {holds: "the unit tests and the conformance suite: the tool on the example project, the guard, the coach and the sessions on each agent's format", components: 3, files: 3, blocks: 11, map: map/tests.yaml, needs: {}, needed_by: {}}
 
 other:
   # files without code to read, by folder; each kind described in map.json (describe)
@@ -26,4 +26,4 @@ other:
   "docs/": ["COMMANDS.md", "COMPARISON.md", "CONFIG.md", "EVIDENCE.md", "LANGUAGES.md", "METHOD.md", "TAGGING.md"]
   "go/": ["go.mod"]
   "rust/": ["Cargo.lock"]
-  "tests/": {files: 60, jsonl: 2, txt: 58}
+  "tests/": {files: 81, jsonl: 3, txt: 78}

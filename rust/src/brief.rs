@@ -4,9 +4,11 @@ use crate::files::*;
 use crate::imports::Graph;
 use crate::parse::{everything, facts, save_cache, Block};
 use crate::query::git;
+use crate::ask::ask;
 use crate::recipes::recipes_matching;
 use crate::write::components;
 use indexmap::IndexMap;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 const STOP: &str = "a an and are as at be by can do does for from has have how i in into is it its me my new of on or our should so that the their them then there these this to us was we what when where which who why will with add change changes make fix use using want need needs";
@@ -63,9 +65,10 @@ pub fn ranked<'a>(blocks: &'a [Block], g: &Graph, words: &[String]) -> Vec<(f64,
     out
 }
 
-pub fn brief(args: &[String]) {
+pub fn brief(args: &[String], strict: bool) -> Vec<String> {
     let words = words_in(args);
     if words.is_empty() {
+        if !strict { return vec![]; }
         die("Say the task in a few words, as the code names things: brief cart totals discount");
     }
     let (blocks, _, untagged) = everything();
@@ -88,10 +91,15 @@ pub fn brief(args: &[String]) {
     let mut order: Vec<String> = per.keys().cloned().collect();
     order.sort_by(|a, b| score[b].partial_cmp(&score[a]).unwrap());
     if order.is_empty() {
+        if !strict {
+            print(&format!("No block matches {}.", words.join(" ")));
+            return vec![];
+        }
         die(&format!("No block matches those words. Try others, or {} find <word>.", cmd()));
     }
     let near: Vec<String> = order.iter().filter(|c| score[*c] >= 0.25 * score[&order[0]]).take(10).cloned().collect();
     let (chosen, also) = if near.len() > 3 { (near[..3].to_vec(), near[3..].to_vec()) } else { (near.clone(), vec![]) };
+    let mut doc_components: Vec<Value> = Vec::new();
     print(&format!("brief {}: {} of {} components that match, best first. ask <id or name> reads a block.", words.join(" "), near.len(), order.len()));
     for (ci, c) in chosen.iter().enumerate() {
         let info = &comps[c];
@@ -104,6 +112,7 @@ pub fn brief(args: &[String]) {
             best.entry(b.id.clone()).or_insert((b, 0)).1 += 1;
         }
         let limit = if ci < 2 { 5 } else { 3 };
+        let parts_json: Vec<Value> = best.values().take(limit).map(|(b, n)| json!({"id": b.id, "file": b.path, "first": b.first, "last": b.last, "purpose": b.purpose, "more_files": n - 1})).collect();
         for (i, (b, n)) in best.values().take(limit).enumerate() {
             print(&format!("  {} {} {}:{}-{}{} — {}", if i == 0 { "parts:" } else { "      " }, b.id, b.path, b.first, b.last, if *n > 1 { format!(" (+{} files)", n - 1) } else { String::new() }, short(&b.purpose, 70)));
         }
@@ -131,10 +140,15 @@ pub fn brief(args: &[String]) {
         }
         let mut gargs: Vec<&str> = vec!["log", "-n", "2", "--format=%ad %h %s", "--date=short", "--"];
         gargs.extend(fs.iter().map(|s| s.as_str()));
+        let mut changed: Vec<String> = Vec::new();
         for ln in git(&gargs).split('\n').filter(|l| !l.trim().is_empty()) {
+            changed.push(ln.to_string());
             print(&format!("  changed {}", short(ln, 110)));
         }
+        let names = |s: &HashSet<String>| -> Vec<String> { sorted(s) };
+        doc_components.push(json!({"name": c, "what": info.what, "files": fs, "parts": parts_json, "declares": decl, "needs": names(&info.needs), "needed_by": names(&info.by), "tests": ts, "docs": sorted(&info.docs), "changed": changed}));
     }
+    let mut doc_also: Vec<Value> = Vec::new();
     if !also.is_empty() {
         print("\nalso:");
     }
@@ -142,13 +156,16 @@ pub fn brief(args: &[String]) {
         let mut xs = per[c].clone();
         xs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         let b = xs[0].1;
+        doc_also.push(json!({"component": c, "id": b.id, "file": b.path, "first": b.first, "last": b.last, "purpose": b.purpose, "tests": comps[c].tests.len()}));
         print(&format!("{}  {} {}:{}-{} — {}; {} tests", c, b.id, b.path, b.first, b.last, short(&b.purpose, 70), comps[c].tests.len()));
     }
     let checks: Vec<String> = hits.iter().filter(|(_, b)| is_test(&b.path)).take(3).map(|(_, b)| format!("{} {}:{}-{}", b.id, b.path, b.first, b.last)).collect();
     if !checks.is_empty() {
         print(&format!("tests that say it: {}", checks.join("; ")));
     }
+    let mut doc_recipes: Vec<Value> = Vec::new();
     for (name, about) in recipes_matching(&words) {
+        doc_recipes.push(json!({"name": name, "about": about}));
         print(&format!("recipe {}: {} ({} recipe {})", name, about, cmd(), name));
     }
     if !untagged.is_empty() {
@@ -159,6 +176,58 @@ pub fn brief(args: &[String]) {
         print(&format!("Next, one call for the whole first round (add every other question to it): {} ask {}", cmd(), first.join(" ")));
     }
     print(&format!("End each change with: {} check", cmd()));
+    if json_on() {
+        let says: Vec<Value> = hits.iter().filter(|(_, b)| is_test(&b.path)).take(3).map(|(_, b)| json!({"id": b.id, "file": b.path, "first": b.first, "last": b.last})).collect();
+        print_json(&json!({"words": words, "matching": near.len(), "total": order.len(), "components": doc_components, "also": doc_also, "tests_that_say_it": says, "recipes": doc_recipes, "untagged_files": untagged.len(), "first_round": first, "check": format!("{} check", cmd())}));
+    }
     save_cache();
+    first
 }
 // @end map.brief.print
+
+// @map map.brief.pack: where a task starts, in one call: a recipe's steps and the brief of the task's words, then that first round answered within the budget
+pub fn pack(args: &[String]) {
+    let mut words: Vec<String> = Vec::new();
+    let mut budget: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--budget" && i + 1 < args.len() {
+            budget = Some(args[i + 1].clone());
+            i += 2;
+            continue;
+        }
+        words.push(args[i].clone());
+        i += 1;
+    }
+    let _ = take_out();
+    let mut first: Vec<String> = Vec::new();
+    if !words.is_empty() && cfg().recipes.contains_key(&words[0]) {
+        crate::recipes::recipe(&words[0]);
+        first = cfg().recipes[&words[0]].get("steps").and_then(|s| s.as_array()).map(|a| a.iter().map(|e| e.as_array().and_then(|p| p.first()).and_then(|x| x.as_str()).unwrap_or("").to_string()).collect()).unwrap_or_default();
+        words.remove(0);
+        if !words.is_empty() { print(""); }
+    }
+    if !words.is_empty() || first.is_empty() {
+        let strict = first.is_empty();
+        first.extend(brief(&words, strict));
+    }
+    let first = unique(&first);
+    if !first.is_empty() {
+        print(&format!("\nThe first round, answered ({} ask {}):", cmd(), first.join(" ")));
+    }
+    let captured = take_out();
+    if first.is_empty() {
+        print_raw(&captured);
+        return;
+    }
+    let limit = match &budget { Some(b) if !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()) => b.parse().unwrap_or(usize::MAX), _ => cfg().answer };
+    let left = if limit > 0 { limit.saturating_sub(captured.chars().count()).max(1) } else { 0 };
+    let mut q = first.clone();
+    q.push("--budget".into());
+    q.push(left.to_string());
+    ask(&q);
+    let rest = take_out();
+    print_raw(&captured);
+    print_raw(&rest);
+}
+// @end map.brief.pack

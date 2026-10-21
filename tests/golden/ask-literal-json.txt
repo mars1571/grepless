@@ -1,0 +1,2 @@
+rc=0
+{"questions":[{"question":"def total(","blocks":[],"declarations":[],"files":[],"hits":[{"file":"src/shop/cart.py","line":29,"text":"def total(cart):","block":"shop.cart.totals"}],"found":true,"text":"== def total(\n  shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents\n29\tdef total(cart):\n"}]}

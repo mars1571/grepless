@@ -1,0 +1,112 @@
+rc=0
+new-discount: a new kind of discount, from the rule to the page and the tests.
+1. shop.prices.discounts  src/shop/prices.py:16-30
+   add the rule where the others are, with its name
+2. shop.cart.totals  src/shop/cart.py:24-38
+   apply it in the total, after the line discounts
+3. web.cart.render  src/web/cart.js:1-14
+   show it on its own line of the summary
+4. tests.cart.discounts  tests/test_cart.py:23-39
+   a test of the rule on a real cart
+5. docs/CART.md
+   say the rule where the discounts are described
+
+brief coupon: 3 of 3 components that match, best first. ask <id or name> reads a block.
+
+web.cart  the cart table and its total, aligned amounts, the coupon field  [src/web/cart.css, src/web/cart.js, src/web/index.html]
+  parts: web.cart.styles src/web/cart.css:1-5 — the cart table and its total, aligned amounts, the coupon field
+         web.cart.render src/web/cart.js:1-14 — the cart drawn on the page: one row per line, the total, and the…
+         web.cart.events src/web/cart.js:16-20 — what the page does on a click: the coupon applied, the cart drawn…
+         web.cart.markup src/web/index.html:9-15 — the cart's table, its total line and the coupon field with its button
+  declares (3): readCoupon, render, wire
+  needs (imports): web.format; needed by: —
+  tests (0): none import or name it
+  docs: README.md, docs/CART.md, plan.md
+  changed <date> <hash> the example
+
+shop.cart  the cart: its lines, adding and removing articles, and what it holds  [src/shop/cart.py]
+  parts: shop.cart.totals src/shop/cart.py:24-38 — the totals: each line's amount and discount, the coupon on the rest,…
+  declares (8): Cart, __init__, add, remove, is_empty, line_total, total, summary
+  needs (imports): shop.prices; needed by: tests.cart
+  tests (1): tests/test_cart.py
+  docs: README.md, docs/CART.md, plan.md
+  changed <date> <hash> the example
+
+shop.prices  the price of each article, by its code, in cents  [src/shop/prices.py]
+  parts: shop.prices.discounts src/shop/prices.py:16-30 — the discount rules: a percentage past a quantity, and a coupon on…
+  declares (3): coupon_percent, price, line_discount
+  needs (imports): —; needed by: shop.cart
+  tests (0): none import or name it
+  docs: docs/CART.md, plan.md
+  changed <date> <hash> the example
+tests that say it: tests.cart.discounts tests/test_cart.py:23-39
+Next, one call for the whole first round (add every other question to it): <map> ask shop.cart.totals shop.prices.discounts web.cart.styles web.cart.render
+End each change with: <map> check
+
+The first round, answered (<map> ask shop.prices.discounts shop.cart.totals web.cart.render tests.cart.discounts docs/CART.md web.cart.styles):
+== shop.prices.discounts
+  src/shop/prices.py:16-30  shop.prices.discounts: the discount rules: a percentage past a quantity, and a coupon on the whole cart
+  … 15 lines of code left out to keep this call under 3,270 characters: ask shop.prices.discounts in a call of its own
+== shop.cart.totals
+  src/shop/cart.py:24-38  shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+  … 15 lines of code left out to keep this call under 3,270 characters: ask shop.cart.totals in a call of its own
+== web.cart.render
+  src/web/cart.js:1-14  web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+2	import { money, units } from './format.js';
+3	
+4	export function render(summary, total) {
+5	  const rows = summary.map(([code, quantity, amount]) =>
+6	    `<tr><td>${code}</td><td>${units(quantity)}</td><td class="amount">${money(amount)}</td></tr>`);
+7	  document.getElementById('cart-lines').innerHTML = rows.join('');
+8	  document.getElementById('cart-total').textContent = money(total);
+9	}
+10	
+11	export function readCoupon() {
+12	  return document.getElementById('coupon').value.trim();
+13	}
+14	// @end web.cart.render
+== tests.cart.discounts
+  tests/test_cart.py:23-39  tests.cart.discounts: the bulk discount past the quantity, and the coupon on the whole cart
+23	# @map tests.cart.discounts: the bulk discount past the quantity, and the coupon on the whole cart
+24	class Discounts(unittest.TestCase):
+25	    def test_bulk_apples(self):
+26	        cart = Cart()
+27	        cart.add('apple', 10)
+28	        self.assertEqual(total(cart), 1200 - 180)
+29	
+30	    def test_coupon(self):
+31	        cart = Cart()
+32	        cart.add('cheese')
+33	        cart.coupon = 'welcome'
+34	        self.assertEqual(total(cart), 640 - 32)
+35	
+36	
+37	if __name__ == '__main__':
+38	    unittest.main()
+39	# @end tests.cart.discounts
+== docs/CART.md
+  docs/CART.md: 16 lines, whole
+1	# The cart
+2	
+3	A cart holds lines of articles (`shop.cart.model`). Its total (`shop.cart.totals`) adds each line's
+4	amount after its discount, then takes the coupon's percentage off the rest.
+5	
+6	## Discounts
+7	
+8	Two rules, both in `src/shop/prices.py`:
+9	
+10	- **Bulk**: ten apples or more take 15 % off each apple.
+11	- **Coupon**: `WELCOME` takes 5 % off the whole cart, after the bulk discounts.
+12	
+13	## The page
+14	
+15	The page (`web.cart.render`) draws one row per line and the total, and applies a coupon typed in the
+16	field (`web.cart.events`).
+== web.cart.styles
+  src/web/cart.css:1-5  web.cart.styles: the cart table and its total, aligned amounts, the coupon field
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+2	#cart-lines td { padding: 4px 8px; }
+3	#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+4	#coupon { width: 10em; text-transform: uppercase; }
+5	/* @end web.cart.styles */

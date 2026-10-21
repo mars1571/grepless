@@ -34,13 +34,17 @@ function questions(line) {
   }
   return out;
 }
+const said = content => (Array.isArray(content) ? content.map(x => (x && typeof x === 'object' && !Array.isArray(x) ? x.text || '' : '')).join('') : typeof content === 'string' ? content : '');
 const stamp = s => { const t = Date.parse(s); return Number.isNaN(t) ? null : t / 1000; };
 function calls(file) {
-  const out = new Map(), asked = [], uses = new Map(), refused = new Set(); let prev = null;
+  const out = new Map(), asked = [], uses = new Map(), refused = new Set(), mapped = new Set(); let prev = null;
   for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
     let o; try { o = JSON.parse(line); } catch { continue; }
     const m = o.message || {}, t = stamp(o.timestamp || '');
-    if (Array.isArray(m.content)) for (const x of m.content) if (x && x.type === 'tool_result' && JSON.stringify(x.content || '').includes('through its map')) refused.add(x.tool_use_id);
+    if (Array.isArray(m.content)) for (const x of m.content) {
+      if (x && x.type === 'tool_result' && JSON.stringify(x.content ?? null).includes('through its map')) refused.add(x.tool_use_id);
+      else if (x && x.type === 'tool_result' && said(x.content).startsWith('== ')) mapped.add(x.tool_use_id);   // the map's answer: a line the guard ran through the map
+    }
     if (o.type !== 'assistant' || !m.id) { prev = t || prev; continue; }
     for (const x of m.content || []) if (x && x.type === 'tool_use') {
       uses.set(x.id, [x.name, x.input || {}, o.cwd || ROOT]);
@@ -49,13 +53,16 @@ function calls(file) {
     const u = m.usage || {};
     let c = out.get(m.id); if (!c) { c = { ctx: 0, kinds: [], since: prev, last: t }; out.set(m.id, c); }
     c.last = t || c.last; c.ctx = Math.max(c.ctx, (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0));
-    for (const x of m.content || []) if (x && x.type === 'tool_use') c.kinds.push(looks(x.name, x.input || {}));
+    for (const x of m.content || []) if (x && x.type === 'tool_use') c.kinds.push([x.id, looks(x.name, x.input || {})]);
     prev = t || prev;
   }
   let outside = 0;
-  for (const [k, [tool, given, cwd]] of uses) if (!refused.has(k) && replacement('claude', { tool_name: tool, tool_input: given, cwd })) outside++;
-  const rows = [...out.values()].map(c => [c.ctx, !c.kinds.length || c.kinds.includes(null) ? null : c.kinds.includes('map') ? 'map' : 'other',
-    c.since && c.last && c.last - c.since > 0 && c.last - c.since < 600 ? c.last - c.since : null]);
+  for (const [k, [tool, given, cwd]] of uses) if (!refused.has(k) && !mapped.has(k) && replacement('claude', { tool_name: tool, tool_input: given, cwd })) outside++;
+  const rows = [...out.values()].map(c => {
+    const kinds = c.kinds.map(([i, kind]) => (mapped.has(i) && kind === 'other' ? 'map' : kind));
+    return [c.ctx, !kinds.length || kinds.includes(null) ? null : kinds.includes('map') ? 'map' : 'other',
+      c.since && c.last && c.last - c.since > 0 && c.last - c.since < 600 ? c.last - c.since : null];
+  });
   return [rows, asked, outside];
 }
 const median = xs => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
@@ -68,27 +75,45 @@ function fixed(x, d) {
   return ((n % 2 === 0 ? n : n + 1) / 10 ** d).toFixed(d);
 }
 const f1 = x => (x === null ? '-' : fixed(x, 1));
+function measure(file) {
+  const [cs, asked, outside] = calls(file);
+  const nav = cs.filter(c => c[1]);
+  let runs = 0, run = 0; for (const c of [...cs, [0, null, null]]) { if (c[1]) run++; else { runs += run >= 8 ? 1 : 0; run = 0; } }
+  const row = [cs.length, cs.reduce((a, c) => a + c[0], 0), nav.length, nav.reduce((a, c) => a + c[0], 0), nav.filter(c => c[1] === 'map').length, asked.length, asked.reduce((a, b) => a + b, 0), outside, runs];
+  return [row, cs.filter(c => c[2] && c[0] < 300000).map(c => c[2]), cs.filter(c => c[2] && c[0] >= 300000).map(c => c[2])];
+}
+// The session's cost in USD and whether some model's price was unknown: the largest totalCostUSD of its cost-state records.
+function cost(file) {
+  let best = null, unknown = false;
+  for (const x of fs.readFileSync(file, 'utf8').split('\n')) {
+    if (!x.includes('"cost-state"')) continue;
+    let d; try { d = JSON.parse(x); } catch { continue; }
+    if (!d || d.type !== 'cost-state' || typeof d.totalCostUSD !== 'number') continue;
+    best = best === null ? d.totalCostUSD : Math.max(best, d.totalCostUSD); unknown = unknown || d.hasUnknownModelCost === true;
+  }
+  return best === null ? null : [best, unknown];
+}
 function report(paths) {
-  const total = new Array(9).fill(0); const allLo = [], allHi = [];
-  process.stdout.write('session'.padEnd(19) + 'calls'.padStart(6) + 'read M'.padStart(8) + 'search/read'.padStart(16) + 'their M'.padStart(8) + 'via map'.padStart(8)
+  const total = new Array(10).fill(0); let spent = null; const allLo = [], allHi = [];
+  process.stdout.write('session'.padEnd(19) + 'calls'.padStart(6) + 'agents'.padStart(7) + '$'.padStart(8) + 'read M'.padStart(8) + 'search/read'.padStart(16) + 'their M'.padStart(8) + 'via map'.padStart(8)
     + 'asks'.padStart(6) + 'q/ask'.padStart(6) + 'outside'.padStart(8) + 'runs 8+'.padStart(8) + 's <300k'.padStart(8) + 's >300k'.padStart(8) + '\n');
-  const line = (name, r, lo, hi) => process.stdout.write(name.padEnd(19) + String(r[0]).padStart(6) + fixed(r[1] / 1e6, 1).padStart(8) + String(r[2]).padStart(9)
+  const line = (name, r, lo, hi, usd) => process.stdout.write(name.padEnd(19) + String(r[0]).padStart(6) + String(r[9]).padStart(7) + (usd ? fixed(usd[0], 2) + (usd[1] ? '+' : '') : '-').padStart(8) + fixed(r[1] / 1e6, 1).padStart(8) + String(r[2]).padStart(9)
     + ' (' + (fixed(r[2] / r[0] * 100, 0) + '%').padStart(4) + ')' + fixed(r[3] / 1e6, 1).padStart(8) + String(r[4]).padStart(8) + String(r[5]).padStart(6)
     + fixed(r[5] ? r[6] / r[5] : 0, 1).padStart(6) + String(r[7]).padStart(8) + String(r[8]).padStart(8) + f1(lo).padStart(8) + f1(hi).padStart(8) + '\n');
   for (const p of paths) {
-    const [cs, asked, outside] = calls(p);
-    if (!cs.length) continue;
-    const nav = cs.filter(c => c[1]);
-    let runs = 0, run = 0; for (const c of [...cs, [0, null, null]]) { if (c[1]) run++; else { runs += run >= 8 ? 1 : 0; run = 0; } }
-    const row = [cs.length, cs.reduce((a, c) => a + c[0], 0), nav.length, nav.reduce((a, c) => a + c[0], 0), nav.filter(c => c[1] === 'map').length, asked.length, asked.reduce((a, b) => a + b, 0), outside, runs];
+    const dir = path.join(path.dirname(p), path.basename(p, path.extname(p)), 'subagents');
+    let subs = []; try { subs = fs.readdirSync(dir).filter(x => x.endsWith('.jsonl')).sort().map(x => path.join(dir, x)); } catch { subs = []; }   // the subagents' calls are the session's
+    let row = [...new Array(9).fill(0), subs.length], lo = [], hi = [];
+    for (const t of [p, ...subs]) { const [r, tlo, thi] = measure(t); row = [...r.map((v, k) => row[k] + v), row[9]]; lo = lo.concat(tlo); hi = hi.concat(thi); }
+    if (!row[0]) continue;
     row.forEach((v, k) => { total[k] += v; });
-    const lo = cs.filter(c => c[2] && c[0] < 300000).map(c => c[2]), hi = cs.filter(c => c[2] && c[0] >= 300000).map(c => c[2]);
     allLo.push(...lo); allHi.push(...hi);
     const first = fs.readFileSync(p, 'utf8').split('\n').find(x => x.includes('"timestamp"'));
     let day = ''; try { day = (JSON.parse(first).timestamp || '').slice(0, 10); } catch { day = ''; }
-    line(`${day} ${path.basename(p, '.jsonl').slice(0, 8)}`, row, median(lo), median(hi));
+    const usd = cost(p); if (usd) spent = spent ? [spent[0] + usd[0], spent[1] || usd[1]] : usd;
+    line(`${day} ${path.basename(p, '.jsonl').slice(0, 8)}`, row, median(lo), median(hi), usd);
   }
-  if (total[0]) line('all', total, median(allLo), median(allHi));
+  if (total[0]) line('all', total, median(allLo), median(allHi), spent);
 }
 function main(args) {
   const si = args.indexOf('--since'); const since = si >= 0 ? args[si + 1] : '';

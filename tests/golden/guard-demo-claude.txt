@@ -1,25 +1,37 @@
 == grep: grep -rn coupon src (rc=0)
 {
  "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && <map> ask coupon --in src)",
   "hookEventName": "PreToolUse",
-  "permissionDecision": "deny",
-  "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask coupon --in src"
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && <map> ask coupon --in src)"
+  }
  }
 }
 == cat: cat src/shop/prices.py (rc=0)
 {
  "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && <map> ask src/shop/prices.py)",
   "hookEventName": "PreToolUse",
-  "permissionDecision": "deny",
-  "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/shop/prices.py"
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && <map> ask src/shop/prices.py)"
+  }
  }
 }
 == sed: sed -n 1,20p src/web/cart.js (rc=0)
 {
  "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && <map> ask src/web/cart.js:1-20)",
   "hookEventName": "PreToolUse",
-  "permissionDecision": "deny",
-  "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/web/cart.js:1-20"
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && <map> ask src/web/cart.js:1-20)"
+  }
  }
 }
 == count: grep -c coupon src/shop/cart.py && wc -l src/web/*.js (rc=0)
@@ -30,6 +42,64 @@
 (nothing printed: the call goes ahead)
 == not code: cat LICENSE /tmp/map-demo.log (rc=0)
 (nothing printed: the call goes ahead)
+== reads: ls src/web; tail -3 src/shop/prices.py | cut -c1-20 (rc=0)
+{
+ "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && <map> ask src/web; <map> ask src/shop/prices.py:28-30 | cut -c1-20)",
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && <map> ask src/web; <map> ask src/shop/prices.py:28-30 | cut -c1-20)"
+  }
+ }
+}
+== mixed: grep -rn coupon src; python3 -m unittest (rc=0)
+{
+ "hookSpecificOutput": {
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  <map> ask coupon --in src; python3 -m unittest"
+ }
+}
+== check an edit: sed -i 's/TEN/10/' src/shop/prices.py && tail -3 src/shop/prices.py (rc=0)
+(nothing printed: the call goes ahead)
+== count lines: grep -rn coupon src | wc -l (rc=0)
+(nothing printed: the call goes ahead)
+== mixed line: git status -s; grep -rn coupon src 2>/dev/null | head -3; cargo test (rc=0)
+{
+ "hookSpecificOutput": {
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  git status -s; <map> ask coupon --in src | head -3; cargo test"
+ }
+}
+== read-only steps: which python3; sed -n 1,5p src/shop/cart.py; pwd (rc=0)
+{
+ "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && which python3; <map> ask src/shop/cart.py:1-5; pwd)",
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && which python3; <map> ask src/shop/cart.py:1-5; pwd)"
+  }
+ }
+}
+== count with grep: grep -rn coupon src | grep -ic money (rc=0)
+(nothing printed: the call goes ahead)
+== cut a file: cut -c1-20 src/shop/cart.py (rc=0)
+{
+ "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && <map> ask src/shop/cart.py | cut -c1-20)",
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && <map> ask src/shop/cart.py | cut -c1-20)"
+  }
+ }
+}
 == read code (rc=0)
 {
  "hookSpecificOutput": {

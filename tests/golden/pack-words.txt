@@ -1,0 +1,76 @@
+rc=0
+brief cart total: 2 of 3 components that match, best first. ask <id or name> reads a block.
+
+web.cart  the cart table and its total, aligned amounts, the coupon field  [src/web/cart.css, src/web/cart.js, src/web/index.html]
+  parts: web.cart.styles src/web/cart.css:1-5 — the cart table and its total, aligned amounts, the coupon field
+         web.cart.render src/web/cart.js:1-14 — the cart drawn on the page: one row per line, the total, and the…
+         web.cart.markup src/web/index.html:9-15 — the cart's table, its total line and the coupon field with its button
+         web.cart.events src/web/cart.js:16-20 — what the page does on a click: the coupon applied, the cart drawn…
+  declares (3): render, readCoupon, wire
+  needs (imports): web.format; needed by: —
+  tests (0): none import or name it
+  docs: README.md, docs/CART.md, plan.md
+  changed <date> <hash> the example
+
+shop.cart  the cart: its lines, adding and removing articles, and what it holds  [src/shop/cart.py]
+  parts: shop.cart.totals src/shop/cart.py:24-38 — the totals: each line's amount and discount, the coupon on the rest,…
+         shop.cart.model src/shop/cart.py:1-21 — the cart: its lines, adding and removing articles, and what it holds
+  declares (8): Cart, line_total, total, __init__, add, remove, is_empty, summary
+  needs (imports): shop.prices; needed by: tests.cart
+  tests (1): tests/test_cart.py
+  docs: README.md, docs/CART.md, plan.md
+  changed <date> <hash> the example
+tests that say it: tests.cart.totals tests/test_cart.py:1-20; tests.cart.discounts tests/test_cart.py:23-39
+Next, one call for the whole first round (add every other question to it): <map> ask shop.cart.totals web.cart.styles web.cart.render web.cart.markup
+End each change with: <map> check
+
+The first round, answered (<map> ask shop.cart.totals web.cart.styles web.cart.render web.cart.markup):
+== shop.cart.totals
+  src/shop/cart.py:24-38  shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+24	# @map shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+25	def line_total(code, quantity):
+26	    return price(code) * quantity - line_discount(code, quantity)
+27	
+28	
+29	def total(cart):
+30	    """The cart's total in cents: the lines after their discounts, then the coupon's percent off the rest."""
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+32	    return subtotal - subtotal * coupon_percent(cart.coupon) // 100
+33	
+34	
+35	def summary(cart):
+36	    """[(code, quantity, amount in cents)] for the page, plus the total."""
+37	    return [(code, q, line_total(code, q)) for code, q in cart.lines.items()], total(cart)
+38	# @end shop.cart.totals
+== web.cart.styles
+  src/web/cart.css:1-5  web.cart.styles: the cart table and its total, aligned amounts, the coupon field
+1	/* @map web.cart.styles: the cart table and its total, aligned amounts, the coupon field */
+2	#cart-lines td { padding: 4px 8px; }
+3	#cart-lines .amount, #cart-total { text-align: right; font-variant-numeric: tabular-nums; }
+4	#coupon { width: 10em; text-transform: uppercase; }
+5	/* @end web.cart.styles */
+== web.cart.render
+  src/web/cart.js:1-14  web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+1	// @map web.cart.render: the cart drawn on the page: one row per line, the total, and the coupon field
+2	import { money, units } from './format.js';
+3	
+4	export function render(summary, total) {
+5	  const rows = summary.map(([code, quantity, amount]) =>
+6	    `<tr><td>${code}</td><td>${units(quantity)}</td><td class="amount">${money(amount)}</td></tr>`);
+7	  document.getElementById('cart-lines').innerHTML = rows.join('');
+8	  document.getElementById('cart-total').textContent = money(total);
+9	}
+10	
+11	export function readCoupon() {
+12	  return document.getElementById('coupon').value.trim();
+13	}
+14	// @end web.cart.render
+== web.cart.markup
+  src/web/index.html:9-15  web.cart.markup: the cart's table, its total line and the coupon field with its button
+9	<!-- @map web.cart.markup: the cart's table, its total line and the coupon field with its button -->
+10	<table>
+11	  <tbody id="cart-lines"></tbody>
+12	  <tfoot><tr><td colspan="2">Total</td><td id="cart-total"></td></tr></tfoot>
+13	</table>
+14	<p><input id="coupon" placeholder="Coupon"> <button id="apply-coupon">Apply</button></p>
+15	<!-- @end web.cart.markup -->

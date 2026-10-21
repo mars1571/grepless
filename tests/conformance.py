@@ -29,11 +29,18 @@ QUESTIONS = ['shop.cart.totals', 'total', 'src/web/*.js', 'docs/CART.md#discount
              'src/shop/cart.py:30', '#cart-total', 'money', 'readCoupon(', 'ten apples', 'src/web/cart.css']
 CASES = [
     ('build', ['build']), ('check', ['check']), ('ask', ['ask'] + QUESTIONS), ('ask-all', ['ask', 'coupon', '--all']),
+    ('ask-budget', ['ask', 'shop.cart.totals', 'src/web/cart.js', 'total', '--budget', '1500']),
+    ('pack', ['pack', 'new-discount', 'coupon', '--budget', '6000']), ('pack-words', ['pack', 'cart', 'total']),
+    ('pack-none', ['pack', 'zzz-nothing']),
     ('find', ['find', 'discount']), ('find-name', ['find', 'money']), ('find-none', ['find', 'zzz-nothing']),
     ('where', ['where', 'shop.cart']), ('deps', ['deps', 'src/shop/cart.py']), ('impact', ['impact', 'shop.prices']),
     ('impact-file', ['impact', 'src/web/format.js']), ('tests', ['tests', 'src/shop/prices.py', 'src/web/format.js']),
     ('recipe-list', ['recipe']), ('recipe', ['recipe', 'new-discount']), ('gaps', ['gaps']), ('brief', ['brief', 'cart', 'discount', 'coupon']),
     ('brief-web', ['brief', 'page', 'money', 'format']), ('history', ['history', 'shop.cart.totals']), ('plan', ['plan', 'plan.md']),
+    ('ask-json', ['ask', '--json', 'shop.cart.totals', 'total', 'src/web/*.js', 'src/shop/cart.py:5-8', 'coupon', '--in', 'src/web']),
+    ('ask-literal', ['ask', '--literal', 'total(', 'function render', 'a|b', 'cart.lines']), ('ask-literal-flag', ['ask', '-F', 'shop.cart.totals']),
+    ('ask-literal-json', ['ask', '--json', '-F', 'def total(']), ('brief-json', ['brief', '--json', 'cart', 'discount', 'coupon']),
+    ('find-json', ['find', '--json', 'discount']), ('find-name-json', ['find', '--json', 'money']),
     ('help', ['help']), ('version', ['version']),
 ]
 GUARD_CASES = [
@@ -43,6 +50,15 @@ GUARD_CASES = [
     ('claude-script', None, {'tool_name': 'Bash', 'tool_input': {'command': "python3 -c \"print(open('src/shop/cart.py').read())\""}}),
     ('claude-heredoc', None, {'tool_name': 'Bash', 'tool_input': {'command': "cat > /tmp/peek-conf.py <<'EOF'\nt = open('src/shop/prices.py').read()\nprint(t[:500])\nEOF"}}),
     ('claude-allowed', None, {'tool_name': 'Bash', 'tool_input': {'command': 'grep -c coupon src/shop/cart.py && python3 -m unittest'}}),
+    ('claude-mixed', None, {'tool_name': 'Bash', 'tool_input': {'command': 'sed -n 1,5p src/shop/cart.py; python3 -m unittest'}}),
+    ('claude-mixed-line', None, {'tool_name': 'Bash', 'tool_input': {'command': 'grep -rn coupon src 2>&1 | head -3; cargo test -p shop && sed -n 1,5p src/shop/cart.py'}}),
+    ('claude-outside', None, {'tool_name': 'Bash', 'tool_input': {'command': 'cat docs/CART.md; ls /tmp'}}),
+    ('claude-readonly', None, {'tool_name': 'Bash', 'tool_input': {'command': 'git status --short | head -3; which python3; sed -n 1,5p src/shop/cart.py; pwd'}}),
+    ('claude-forms', None, {'tool_name': 'Bash', 'tool_input': {'command': 'cut -c1-20 src/shop/cart.py 2>&1; grep -rn coupon src | sed -n 1,3p'}}),
+    ('claude-count-grep', None, {'tool_name': 'Bash', 'tool_input': {'command': 'grep -rn coupon src | grep -ic money'}}),
+    ('codex-mixed-line', 'codex', {'hook_event_name': 'PreToolUse', 'turn_id': 't', 'tool_name': 'Bash', 'tool_input': {'command': 'cd src && cat shop/cart.py; npm test'}}),
+    ('claude-edit-check', None, {'tool_name': 'Bash', 'tool_input': {'command': "sed -i 's/TEN/10/' src/shop/prices.py && grep -n TEN src/shop/prices.py"}}),
+    ('claude-count', None, {'tool_name': 'Bash', 'tool_input': {'command': 'grep -rn coupon src | wc -l'}}),
     ('claude-read', None, {'tool_name': 'Read', 'tool_input': {'file_path': '{root}/src/shop/cart.py'}}),
     ('claude-read-range', None, {'tool_name': 'Read', 'tool_input': {'file_path': '{root}/src/shop/cart.py', 'offset': 10, 'limit': 20}}),
     ('claude-grep-tool', None, {'tool_name': 'Grep', 'tool_input': {'pattern': 'coupon', 'path': 'src', '-i': True}}),
@@ -78,6 +94,10 @@ SHELL_DEMO = [   # what the guard refuses on the code, then what it lets through
     ('grep', 'grep -rn coupon src'), ('cat', 'cat src/shop/prices.py'), ('sed', 'sed -n 1,20p src/web/cart.js'),
     ('count', 'grep -c coupon src/shop/cart.py && wc -l src/web/*.js'), ('edit', "sed -i 's/TEN/10/' src/shop/prices.py"),
     ('tests', 'python3 -m unittest discover -s tests'), ('not code', 'cat LICENSE /tmp/map-demo.log'),
+    ('reads', 'ls src/web; tail -3 src/shop/prices.py | cut -c1-20'), ('mixed', 'grep -rn coupon src; python3 -m unittest'),
+    ('check an edit', "sed -i 's/TEN/10/' src/shop/prices.py && tail -3 src/shop/prices.py"), ('count lines', 'grep -rn coupon src | wc -l'),
+    ('mixed line', 'git status -s; grep -rn coupon src 2>/dev/null | head -3; cargo test'), ('read-only steps', 'which python3; sed -n 1,5p src/shop/cart.py; pwd'),
+    ('count with grep', 'grep -rn coupon src | grep -ic money'), ('cut a file', 'cut -c1-20 src/shop/cart.py'),
 ]
 SHELL = {   # each agent's shell event, with the flag its settings give the guard (agents/README.md)
     'claude': (None, lambda c: {'hook_event_name': 'PreToolUse', 'session_id': 's', 'cwd': '{root}', 'tool_name': 'Bash', 'tool_input': {'command': c}}),
@@ -139,8 +159,9 @@ def hook_answers(guard, coach, sessions, root):
             steps += [(c, event(c)) for c in MAP_READS[1:]]
             tool, edit = EDITS[agent]
             steps += [(f'an edit ({tool})', event(edit, tool)), (MAP_READS[1], event(MAP_READS[1]))]
-            if agent == 'claude':
-                steps += [('a subagent', {**event(MAP_READS[2]), 'agent_id': 'sub-1'}), ('not json', 'not json'), ('no session', {'tool_name': 'Bash'})]
+            if agent == 'claude':                                     # a subagent counts its own reads, apart from its session's
+                steps += [(f'a subagent: {c}', {**event(c), 'agent_id': 'sub-1'}) for c in MAP_READS[1:]]
+                steps += [('not json', 'not json'), ('no session', {'tool_name': 'Bash'})]
             text = ''
             for label, data in steps:
                 payload = data if isinstance(data, str) else json.dumps(data)
@@ -167,9 +188,10 @@ def shown(text, root):
 
 # @map tests.conformance.run: each implementation run on a fresh copy of the example, its answers masked and compared with the golden files, or recorded
 def mask(text, root):
-    text = text.replace(str(root), '<root>')
+    text = text.replace(os.path.realpath(root), '<root>').replace(str(root), '<root>')    # /var is /private/var on macOS
     text = re.sub(r'changed \d{4}-\d{2}-\d{2} [0-9a-f]{7} ', 'changed <date> <hash> ', text)
     text = re.sub(r'^  [0-9a-f]{7} \d{4}-\d{2}-\d{2} ', '  <hash> <date> ', text, flags=re.M)
+    text = re.sub(r'"\d{4}-\d{2}-\d{2} [0-9a-f]{7} ', '"<date> <hash> ', text)      # a commit in --json
     text = re.sub(r'python3 \S*map\.py', '<map>', text)
     return text
 

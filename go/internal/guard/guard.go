@@ -22,9 +22,18 @@ var TEXT = map[string]bool{}
 var NAMED = set("Makefile GNUmakefile Dockerfile Containerfile Rakefile Gemfile Justfile Vagrantfile CMakeLists.txt Jenkinsfile")
 var SKIP = set("node_modules dist build out target vendor venv .venv __pycache__ .git .hg .svn .tox .mypy_cache .pytest_cache .cache coverage .idea .vscode bower_components .next .nuxt .terraform Pods DerivedData map")
 var SEARCH = set("grep egrep fgrep rg ag ack")
-var READ = set("cat sed head tail awk nl less more bat cut strings xxd od perl ruby")
+var READ = set("cat sed head tail awk nl less more bat cut sort uniq strings xxd od perl ruby")
+var FILE_FILTERS = map[string]string{"cut": "bcdf", "sort": "ktTS", "uniq": "fsw"} // filters that read a file given to them: the flags that take a value
 var LIST = set("ls find tree fd")
 var FILTERS = set("head tail cut grep egrep sort uniq wc sed awk tr column")
+var KEPT = set("head tail cut grep egrep sort uniq wc tr column") // filters a line run in its place keeps: none runs a command or writes
+var QUIET = set("echo printf true : wc")                          // steps a line run in its place keeps as they are
+
+const REASON_LINE = "This repository's code and docs are read and located through its map, every question of a round in one call " +
+	"(AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  "
+
+const NOTE = "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; " +
+	"next time, ask every question of a round in one call):\n  "
 
 const REASON = "This repository's code and docs are read and located through its map, every question of a round in one call " +
 	"(AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  "
@@ -511,7 +520,7 @@ func withoutHeredocs(line string) string {
 	return line
 }
 
-var quietRx = regexp.MustCompile(`\d?>&\d|\d?>\s*/dev/null`)
+var quietRx = regexp.MustCompile(`&>\s*/dev/null|\d?>&\d|\d?>\s*/dev/null`) // stderr or all output thrown away: no word of the command
 var opRx = regexp.MustCompile(`\|\||&&|\|&|;;|>>|&>|[|&;()<>]`)
 var opOnlyRx = regexp.MustCompile(`^[|&;()<>]+$`)
 
@@ -575,9 +584,9 @@ var tagRx = regexp.MustCompile(`@map\s+([\w.-]+)`)
 var headingPat = regexp.MustCompile(`^\^#+.*$`)
 var basicRx = regexp.MustCompile(`\\([|(){}+?])|([|(){}+?])`)
 
-func GrepQuestion(words []string, base string) []string {
-	var pats, paths, includes []string
-	flags := map[string]bool{}
+// grepParts: (patterns, paths, includes, flags) of a grep-like search.
+func grepParts(words []string) (pats, paths, includes []string, flags map[string]bool) {
+	flags = map[string]bool{}
 	for i := 1; i < len(words); i++ {
 		a := words[i]
 		switch {
@@ -612,6 +621,11 @@ func GrepQuestion(words []string, base string) []string {
 	if len(pats) == 0 && len(paths) > 0 {
 		pats, paths = []string{paths[0]}, paths[1:]
 	}
+	return
+}
+
+func GrepQuestion(words []string, base string) []string {
+	pats, paths, includes, flags := grepParts(words)
 	if has(flags, "c", "q", "l", "L", "--count", "--quiet", "--silent", "--files-with-matches", "--files-without-match") {
 		return nil
 	}
@@ -762,25 +776,43 @@ func countLines(rel string) int {
 	return n
 }
 
-func ReadQuestion(words []string, base string) []string {
+// fileFilter: (the filter's words without its files, the files) of cut, sort or uniq; false when it writes (sort -o, uniq's output).
+func fileFilter(words []string) (keep, files []string, ok bool) {
+	tool, skip := filepath.Base(words[0]), false
+	keep = []string{words[0]}
+	for _, a := range words[1:] {
+		switch {
+		case skip:
+			keep = append(keep, a)
+			skip = false
+		case strings.HasPrefix(a, "--") && len(a) > 2:
+			if strings.HasPrefix(a, "--output") {
+				return nil, nil, false
+			}
+			keep = append(keep, a)
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			if tool == "sort" && strings.Contains(a[1:], "o") {
+				return nil, nil, false
+			}
+			keep = append(keep, a)
+			skip = len(a) == 2 && strings.IndexByte(FILE_FILTERS[tool], a[1]) >= 0
+		default:
+			files = append(files, a)
+		}
+	}
+	if tool == "uniq" && len(files) > 1 {
+		return nil, nil, false
+	}
+	return keep, files, true
+}
+
+// readFiles: (script, files) of a read: sed's script (awk's program is passed over), and the files it names.
+func readFiles(words []string) (script string, hasScript bool, files []string) {
 	tool, args := words[0], words[1:]
-	if tool == "sed" {
-		for _, a := range args {
-			if strings.HasPrefix(a, "-i") || a == "--in-place" {
-				return nil
-			}
-		}
+	if FILE_FILTERS[tool] != "" {
+		_, files, _ = fileFilter(words)
+		return
 	}
-	if tool == "perl" || tool == "ruby" {
-		for _, a := range args {
-			if inplaceRx.MatchString(a) {
-				return nil
-			}
-		}
-	}
-	script := ""
-	hasScript := false
-	var files []string
 	switch tool {
 	case "sed":
 		var rest []string
@@ -814,6 +846,26 @@ func ReadQuestion(words []string, base string) []string {
 			files = append(files, a)
 		}
 	}
+	return
+}
+
+func ReadQuestion(words []string, base string) []string {
+	tool, args := words[0], words[1:]
+	if tool == "sed" {
+		for _, a := range args {
+			if strings.HasPrefix(a, "-i") || a == "--in-place" {
+				return nil
+			}
+		}
+	}
+	if tool == "perl" || tool == "ruby" {
+		for _, a := range args {
+			if inplaceRx.MatchString(a) {
+				return nil
+			}
+		}
+	}
+	script, hasScript, files := readFiles(words)
 	n, fromStart, noN := 10, false, false
 	for k, a := range args {
 		if strings.HasPrefix(a, "-c") {
@@ -1114,6 +1166,647 @@ func ScriptQuestion(line, cwd string) []string {
 
 // @end map.guard.commands.scripts
 
+// @map map.guard.commands.rewrite: a line that edits a file, whose reads check the edit; a line of reads only, run through the map in its place
+var simpleSed = regexp.MustCompile(`^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p|\d+q)$`)                                // sed -n 5,20p: a range of lines, nothing that runs or writes
+var simpleAwk = regexp.MustCompile(`^NR\s*(?:>=|<=|==|<|>)\s*\d+(?:\s*&&\s*NR\s*(?:>=|<=|==|<|>)\s*\d+)?$`) // awk 'NR>=5 && NR<=20'
+var syntax = set("for in case select done fi esac do then else elif if while until { } ! function")
+var segmentRx = regexp.MustCompile(`(?s)^(\s*)((?:(?:do|then|else|elif|if|while|until|!|\{|time)\s+)*)(.*?)(\s*)$`)
+var assignRx = regexp.MustCompile(`^[A-Za-z_]\w*=.*$`)
+var redirWordRx = regexp.MustCompile(`^[<>&]+$`)
+var gitRead = set("status log diff show rev-parse branch")
+var gitBranchFlags = set("--list --all --remotes --verbose --show-current --no-color --color --ignore-case --merged --no-merged --contains --no-contains --points-at --sort --format --abbrev --column --no-column")
+var gitBranchValues = set("--merged --no-merged --contains --no-contains --points-at --sort --format --abbrev")
+var branchListRx = regexp.MustCompile(`^-[a-z]*l[a-z]*$`)
+var branchShortRx = regexp.MustCompile(`^-[arvli]+$`)
+var dateIsoRx = regexp.MustCompile(`^(?:-I\w*|--iso-8601(=\w+)?)$`)
+
+// lineWrites: whether the line changes a file of the repository: sed -i, perl -i, a redirection or tee into it, patch,
+// git apply, a script that writes.
+func lineWrites(line, cwd string) bool {
+	for _, c := range Commands(line, cwd) {
+		words := c.words
+		tool := filepath.Base(words[0])
+		var targets []string
+		for k := 0; k < len(words)-1; k++ {
+			if words[k] == ">" || words[k] == ">>" || words[k] == "&>" {
+				targets = append(targets, words[k+1])
+			}
+		}
+		if tool == "tee" {
+			targets = append(targets, words[1:]...)
+		}
+		for _, t := range targets {
+			if _, ok := Inside(t, c.base); ok && !strings.Contains(t, "$") && !strings.HasPrefix(t, "-") {
+				return true
+			}
+		}
+		if tool == "patch" || (tool == "git" && len(words) > 1 && words[1] == "apply") {
+			return true
+		}
+		if tool == "sed" {
+			for _, a := range words[1:] {
+				if strings.HasPrefix(a, "-i") || a == "--in-place" {
+					return true
+				}
+			}
+		}
+		if tool == "perl" || tool == "ruby" {
+			for _, a := range words[1:] {
+				if inplaceRx.MatchString(a) {
+					return true
+				}
+			}
+		}
+	}
+	for _, text := range scripts(line, cwd) {
+		if writes(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// isMap: whether a command runs the map itself (the command of map.json, any of its commands).
+func isMap(words []string) bool {
+	head := strings.Fields(ASK)
+	head = head[:len(head)-1]
+	if len(words) < len(head) {
+		return false
+	}
+	for k, h := range head {
+		if words[k] != h {
+			return false
+		}
+	}
+	return true
+}
+
+// whole: whether the map answers all a read names: no file or folder of it would be left out of its ask.
+func whole(words []string, base string) bool {
+	tool := filepath.Base(words[0])
+	if tool == "git" && len(words) > 1 && words[1] == "grep" {
+		tool, words = "grep", words[1:]
+	}
+	rest := append([]string{tool}, words[1:]...)
+	switch {
+	case SEARCH[tool]:
+		_, paths, _, _ := grepParts(rest)
+		for _, p := range paths {
+			r, ok := Inside(p, base)
+			if !Mapped(r, ok, true) {
+				return false
+			}
+		}
+		return true
+	case READ[tool]:
+		_, _, files := readFiles(rest)
+		for _, f := range files {
+			r, ok := Inside(f, base)
+			if !Mapped(r, ok, false) {
+				return false
+			}
+		}
+		return true
+	case tool == "ls" || tool == "tree":
+		for _, a := range words[1:] {
+			if strings.HasPrefix(a, "-") {
+				continue
+			}
+			r, ok := Inside(a, base)
+			if !Mapped(r, ok, true) {
+				return false
+			}
+		}
+		return true
+	}
+	return tool == "find"
+}
+
+type segment struct{ sep, text string }
+
+// splitLine: the line cut at each ; && || | |& & newline ( ) outside quotes, every text exactly as written; false when it
+// holds a heredoc, a $( ) or backticks that run (the line cannot be rebuilt).
+func splitLine(line string) ([]segment, bool) {
+	if len(heredocs(line)) > 0 {
+		return nil, false
+	}
+	var out []segment
+	var buf []byte
+	sep := ""
+	var quote byte
+	i, n := 0, len(line)
+	lastIs := func(chars string) bool { return len(buf) > 0 && strings.IndexByte(chars, buf[len(buf)-1]) >= 0 }
+	for i < n {
+		c := line[i]
+		hasNxt := i+1 < n
+		var nxt byte
+		if hasNxt {
+			nxt = line[i+1]
+		}
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case c == '\\' && hasNxt:
+			buf = append(buf, line[i:i+2]...)
+			i += 2
+			continue
+		case c == '`' || strings.HasPrefix(line[i:], "$("):
+			return nil, false
+		case quote == '"':
+			if c == '"' {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (len(buf) == 0 || lastIs(" \t\n\r\f\v")):
+			j := strings.IndexByte(line[i:], '\n')
+			if j < 0 {
+				j = n
+			} else {
+				j += i
+			}
+			buf = append(buf, line[i:j]...)
+			i = j
+			continue
+		default:
+			op := ""
+			switch {
+			case c == '\n':
+				op = "\n"
+			case strings.HasPrefix(line[i:], ";;"):
+				op = ";;"
+			case c == ';':
+				op = ";"
+			case strings.HasPrefix(line[i:], "||"):
+				op = "||"
+			case strings.HasPrefix(line[i:], "|&"):
+				op = "|&"
+			case c == '|':
+				op = "|"
+			case c == '(':
+				op = "("
+			case c == ')':
+				op = ")"
+			case c != '&' || lastIs("<>") || (hasNxt && nxt == '>'):
+			case hasNxt && nxt == '&':
+				op = "&&"
+			default:
+				op = "&"
+			}
+			if op != "" {
+				out = append(out, segment{sep, string(buf)})
+				sep, buf, i = op, nil, i+len(op)
+				continue
+			}
+		}
+		buf = append(buf, c)
+		i++
+	}
+	out = append(out, segment{sep, string(buf)})
+	return out, true
+}
+
+// step: one segment of a line: sep, lead, prefix (do, then, if ...), core, trail (the text around it, kept as written),
+// words (redirections to /dev/null left out), kind (syntax, cd or cmd), piped (a pipe feeds it), base (the folder it runs
+// in, cd and ( ) followed) and redirected; drop and text are set by rebuild.
+type step struct {
+	sep, lead, prefix, core, trail string
+	words                          []string
+	kind                           string
+	piped                          bool
+	base                           string
+	redirected                     bool
+	drop                           string
+	text                           string
+	hasText                        bool
+}
+
+func (s step) written() string {
+	if s.hasText {
+		return s.text
+	}
+	return s.lead + s.prefix + s.core + s.trail
+}
+
+// joinPath: os.path.join(base, expanduser(p)): an absolute p replaces base.
+func joinPath(base, p string) string {
+	p = expanduser(p)
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(base, p)
+}
+
+// steps: the line as a list of steps; false when the line cannot be rebuilt or a folder is unknown.
+func steps(line, cwd string) ([]step, bool) {
+	segs, ok := splitLine(line)
+	if !ok {
+		return nil, false
+	}
+	var out []step
+	base, known := cwd, true
+	var stack []string
+	for k, sg := range segs {
+		if sg.sep == "(" {
+			stack = append(stack, base)
+		} else if sg.sep == ")" && len(stack) > 0 {
+			base = stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+		}
+		m := segmentRx.FindStringSubmatch(sg.text)
+		lead, prefix, core, trail := m[1], m[2], m[3], m[4]
+		words := ShellWords(quietRx.ReplaceAllString(core, " "))
+		hasName := false
+		for _, w := range words {
+			if !assignRx.MatchString(w) {
+				hasName = true
+			}
+		}
+		piped := k > 0 && (sg.sep == "|" || sg.sep == "|&")
+		kind := "cmd"
+		if !hasName || len(words) == 0 || syntax[words[0]] {
+			kind = "syntax"
+		} else if words[0] == "cd" && !piped {
+			kind = "cd"
+		}
+		redirected := false
+		for _, w := range words {
+			if redirWordRx.MatchString(w) {
+				redirected = true
+			}
+		}
+		out = append(out, step{sep: sg.sep, lead: lead, prefix: prefix, core: core, trail: trail, words: words, kind: kind,
+			piped: piped, base: base, redirected: redirected})
+		if kind == "cd" {
+			if len(words) != 2 || strings.Contains(words[1], "$") || words[1] == "-" {
+				known = false
+			} else {
+				base = filepath.Clean(joinPath(base, words[1]))
+			}
+		}
+		if !known && k+1 < len(segs) {
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// anchored: the text run in the folder it was written for: as it is at the root, else in a (cd root && ...) of its own.
+func anchored(base, text string) string {
+	if realpath(base) == realpath(ROOT) {
+		return text
+	}
+	return "(cd " + quoteWord(ROOT) + " && " + text + ")"
+}
+
+// @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
+// gitReadOnly: whether a git command only reads this repository: status, log, diff, show, rev-parse, branch (listing).
+func gitReadOnly(words []string, base string) bool {
+	args, i := words[1:], 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		if args[i] == "-C" && i+1 < len(args) {
+			base, i = joinPath(base, args[i+1]), i+2
+		} else if args[i] == "--no-pager" || args[i] == "--no-optional-locks" {
+			i++
+		} else {
+			return false
+		}
+	}
+	if _, ok := Inside(".", base); !ok || i >= len(args) || !gitRead[args[i]] {
+		return false
+	}
+	sub, rest := args[i], args[i+1:]
+	if sub == "branch" {
+		listing := false
+		for _, a := range rest {
+			if a == "-l" || a == "--list" || branchListRx.MatchString(a) {
+				listing = true
+			}
+		}
+		for k, a := range rest {
+			if strings.HasPrefix(a, "--") {
+				if !gitBranchFlags[strings.SplitN(a, "=", 2)[0]] {
+					return false
+				}
+			} else if strings.HasPrefix(a, "-") {
+				if !branchShortRx.MatchString(a) {
+					return false
+				}
+			} else if !(listing || (k > 0 && gitBranchValues[rest[k-1]])) {
+				return false // a name with no listing flag makes a branch
+			}
+		}
+		return true
+	}
+	for _, a := range rest {
+		if a == "-O" || a == "--open-files-in-pager" || a == "--no-index" || a == "--ext-diff" || a == "--output" ||
+			strings.HasPrefix(a, "-O") || strings.HasPrefix(a, "--output=") {
+			return false
+		}
+	}
+	return true
+}
+
+func dateReadOnly(args []string) bool {
+	for _, a := range args {
+		if !(strings.HasPrefix(a, "+") || a == "-u" || a == "--utc" || a == "--universal" || a == "-R" || a == "--rfc-email" || dateIsoRx.MatchString(a)) {
+			return false
+		}
+	}
+	return true
+}
+
+func insideAll(operands []string, base string) bool {
+	for _, a := range operands {
+		if _, ok := Inside(a, base); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// flagsAndOperands: the words that start with - and the ones that do not.
+func flagsAndOperands(args []string) (flags map[string]bool, operands []string) {
+	flags = map[string]bool{}
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			flags[a] = true
+		} else {
+			operands = append(operands, a)
+		}
+	}
+	return
+}
+
+// safeHead: whether a read of the repository stays safe as it was written: a search that only counts, cat, head, tail, ls ...,
+// sed with a range, awk with NR conditions; every file in the repository and nothing that runs a command or writes.
+func safeHead(words []string, base string) bool {
+	tool, args := filepath.Base(words[0]), words[1:]
+	flags, operands := flagsAndOperands(args)
+	switch {
+	case SEARCH[tool]:
+		_, paths, _, _ := grepParts(words)
+		for _, a := range args {
+			if h := strings.SplitN(a, "=", 2)[0]; h == "--pre" || h == "--hostname-bin" {
+				return false
+			}
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		return insideAll(paths, base)
+	case tool == "cat" || tool == "head" || tool == "tail" || tool == "nl" || tool == "ls" || tool == "tree":
+		return insideAll(operands, base)
+	case FILE_FILTERS[tool] != "":
+		_, _, ok := fileFilter(words)
+		return ok && insideAll(operands, base)
+	case tool == "find":
+		for _, a := range args {
+			if a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir" || a == "-delete" || strings.HasPrefix(a, "-fprint") || strings.HasPrefix(a, "-fls") {
+				return false
+			}
+		}
+		first := []string{"."}
+		if len(operands) > 0 {
+			first = operands[:1]
+		}
+		return insideAll(first, base)
+	case tool == "sed":
+		for f := range flags {
+			if f != "-n" && f != "-E" && f != "-r" {
+				return false
+			}
+		}
+		return len(operands) > 0 && simpleSed.MatchString(operands[0]) && insideAll(operands[1:], base)
+	case tool == "awk":
+		return len(flags) == 0 && len(operands) > 0 && simpleAwk.MatchString(operands[0]) && insideAll(operands[1:], base)
+	}
+	return false
+}
+
+// safeStep: whether a step that is no read of the map's may stay in a line Claude Code runs without asking: it only reads and
+// touches nothing outside the repository.
+func safeStep(words []string, base string) bool {
+	tool, args := filepath.Base(words[0]), words[1:]
+	if isMap(words) || tool == "echo" || tool == "printf" || tool == "true" || tool == ":" || tool == "pwd" {
+		return true
+	}
+	if tool == "wc" {
+		_, operands := flagsAndOperands(args)
+		return insideAll(operands, base)
+	}
+	if tool == "date" {
+		return dateReadOnly(args)
+	}
+	if tool == "which" {
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") && a != "-a" && a != "-s" {
+				return false
+			}
+		}
+		return true
+	}
+	if words[0] == "command" {
+		return len(words) > 2 && (words[1] == "-v" || words[1] == "-V")
+	}
+	if len(words) == 2 && args[0] == "--version" && !strings.Contains(words[0], "/") {
+		return true
+	}
+	if tool == "git" {
+		return gitReadOnly(words, base)
+	}
+	return SEARCH[tool] && safeHead(words, base) // grep -c file, grep -q ...: a count or a yes
+}
+
+// filterOk: whether a filter in a pipe is kept: head, tail, cut, grep, sort, uniq, wc, tr, column, or sed -n with a range.
+func filterOk(words []string) bool {
+	if KEPT[filepath.Base(words[0])] {
+		return true
+	}
+	if filepath.Base(words[0]) != "sed" {
+		return false
+	}
+	flags, operands := flagsAndOperands(words[1:])
+	for f := range flags {
+		if f != "-n" {
+			return false
+		}
+	}
+	return len(operands) == 1 && simpleSed.MatchString(operands[0])
+}
+
+// @end map.guard.commands.rewrite.readonly
+
+// chainRead: what a pipeline's first command is: "read" (with its ask and the steps it replaced) for a read the map answers,
+// "count" for one that only counts, "step" for anything else, "syntax" for a loop's keywords, an assignment or a cd.
+func chainRead(chain []step) (kind, ask string, used int) {
+	first := chain[0]
+	words, base := first.words, first.base
+	if first.kind != "cmd" {
+		return "syntax", "", 1
+	}
+	if first.redirected {
+		return "step", "", 1
+	}
+	if filepath.Base(words[0]) == "find" && len(chain) > 1 && len(chain[1].words) > 1 && chain[1].words[0] == "xargs" && SEARCH[filepath.Base(chain[1].words[1])] {
+		pattern := "*"
+		for j, a := range words {
+			if (a == "-name" || a == "-iname") && j+1 < len(words) {
+				pattern = words[j+1]
+				break
+			}
+		}
+		root := "."
+		for _, a := range words[1:] {
+			if !strings.HasPrefix(a, "-") {
+				root = a
+				break
+			}
+		}
+		q := GrepQuestion(append(append([]string{}, chain[1].words[1:]...), "-r", root, "--include="+pattern), base)
+		if len(q) > 0 {
+			return "read", ASK + Quote(q), 2
+		}
+		return "step", "", 1
+	}
+	q := question(words, base)
+	if len(q) == 0 {
+		return "step", "", 1
+	}
+	var run [][]string
+	for _, s := range chain[1:] {
+		if len(s.words) == 0 || !FILTERS[filepath.Base(s.words[0])] {
+			break
+		}
+		run = append(run, s.words)
+	}
+	if counts(run) {
+		return "count", "", 1
+	}
+	own := ""
+	if FILE_FILTERS[filepath.Base(words[0])] != "" {
+		if keep, _, ok := fileFilter(words); ok {
+			own = " | " + Quote(keep)
+		}
+	}
+	return "read", ASK + Quote(q) + own, 1
+}
+
+// built: the line rebuilt: its text, whether a read was replaced, ok (every step only reads) and pure (reads and their
+// filters only).
+type built struct {
+	text               string
+	replaced, ok, pure bool
+}
+
+// rebuild: the line with each read of the code or the docs as its ask, every other step as written: in place (Claude Code:
+// from the root, cd steps dropped, steps outside the root in a (cd ...) of their own) or to send again (each ask in a
+// (cd root && ...) when the line is not at the root). nil when the line cannot be rebuilt.
+func rebuild(line, cwd string, inPlace bool) *built {
+	st, ok := steps(line, cwd)
+	if !ok || len(ScriptQuestion(line, cwd)) > 0 {
+		return nil
+	}
+	var out []step
+	replaced, allOk, pure := false, true, true
+	for k := 0; k < len(st); {
+		j := k + 1
+		for j < len(st) && st[j].piped {
+			j++
+		}
+		chain, first := st[k:j], st[k]
+		kind, ask, used := chainRead(chain)
+		for _, s := range chain[used:] {
+			allOk = allOk && len(s.words) > 0 && filterOk(s.words) && !s.redirected
+			pure = pure && len(s.words) > 0 && FILTERS[filepath.Base(s.words[0])]
+		}
+		switch kind {
+		case "syntax":
+			if first.kind == "cd" && inPlace {
+				first.drop = "transfer"
+			}
+			out = append(out, first)
+		case "read":
+			replaced = true
+			allOk = allOk && used == 1 && whole(first.words, first.base) // xargs could run anything
+			if inPlace {
+				first.text = first.lead + first.prefix + ask + first.trail
+			} else {
+				first.text = first.lead + first.prefix + anchored(first.base, ask) + first.trail
+			}
+			first.hasText = true
+			out = append(out, first)
+			if used == 2 {
+				own := chain[1]
+				own.drop = "own"
+				out = append(out, own)
+			}
+		default:
+			pure = false
+			words := first.words
+			good := false
+			if !first.redirected {
+				if kind == "count" {
+					good = safeHead(words, first.base) && whole(words, first.base)
+				} else {
+					good = safeStep(words, first.base)
+				}
+			}
+			allOk = allOk && good
+			text := first.lead + first.prefix + first.core + first.trail
+			if inPlace && realpath(first.base) != realpath(ROOT) {
+				text = first.lead + first.prefix + "(cd " + quoteWord(first.base) + " && " + strings.TrimSpace(first.core) + ")" + first.trail
+			}
+			first.text, first.hasText = text, true
+			out = append(out, first)
+		}
+		out = append(out, chain[used:]...)
+		k = j
+	}
+	var b strings.Builder
+	carry, carried := "", false
+	for _, s := range out {
+		sep := s.sep
+		if carried {
+			sep = carry
+		}
+		if s.drop == "transfer" {
+			carry, carried = s.sep, true
+			continue
+		}
+		carried = false
+		if s.drop == "own" {
+			continue
+		}
+		b.WriteString(sep + s.written())
+	}
+	return &built{b.String(), replaced, allOk, pure}
+}
+
+// rewrite: the line run through the map in its place, from the root: each read of the code or the docs as its ask, every other
+// step as written, in order; "" when a step does more than read, or a filter could run a command.
+func rewrite(line, cwd string) string {
+	b := rebuild(line, cwd, true)
+	if b == nil || !b.replaced || !b.ok {
+		return ""
+	}
+	return "(cd " + quoteWord(ROOT) + " && " + strings.TrimSpace(b.text) + ")"
+}
+
+// resend: the whole line to send again when it is refused and mixed (reads beside other steps): each read as its ask, every
+// other step exactly as written, the same separators; "" when it is reads only (the refusal names their asks) or cannot be rebuilt.
+func resend(line, cwd string) string {
+	b := rebuild(line, cwd, false)
+	if b != nil && b.replaced && !b.pure {
+		return b.text
+	}
+	return ""
+}
+
+// @end map.guard.commands.rewrite
+
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
 func question(words []string, base string) []string {
 	tool := filepath.Base(words[0])
@@ -1132,9 +1825,29 @@ func question(words []string, base string) []string {
 	return nil
 }
 
+// counts: whether a run of filters counts what it is fed: wc, or grep -c.
+func counts(pipe [][]string) bool {
+	for _, w := range pipe {
+		tool := filepath.Base(w[0])
+		if tool == "wc" {
+			return true
+		}
+		if tool == "grep" || tool == "egrep" || tool == "fgrep" {
+			_, _, _, flags := grepParts(w)
+			if flags["c"] || flags["--count"] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ShellQuestion(line, cwd string) string {
 	first := strings.SplitN(line, "\n", 2)[0]
 	if strings.Contains(line, "map.py") || strings.Contains(line, "map.mjs") || (strings.HasPrefix(ASK, "map ") && strings.Contains(" "+first+" ", " map ")) {
+		return ""
+	}
+	if lineWrites(line, cwd) { // an edit: the reads beside it check it
 		return ""
 	}
 	asked := ScriptQuestion(line, cwd)
@@ -1179,15 +1892,31 @@ func ShellQuestion(line, cwd string) string {
 		if len(q) == 0 {
 			continue
 		}
-		var pipe []string
+		var pipe []command
 		for _, w := range parts[k+1:] {
 			if !w.piped || !FILTERS[filepath.Base(w.words[0])] {
 				break
 			}
-			pipe = append(pipe, Quote(w.words))
+			pipe = append(pipe, w)
 		}
-		if len(pipe) > 0 {
-			filtered = append(filtered, ASK+Quote(q)+" | "+strings.Join(pipe, " | "))
+		var run [][]string
+		for _, w := range pipe {
+			run = append(run, w.words)
+		}
+		if counts(run) {
+			continue // a count: nothing of the files is read
+		}
+		var qs []string
+		if FILE_FILTERS[filepath.Base(c.words[0])] != "" { // cut -c1-9 file: the ask, then cut
+			if keep, _, ok := fileFilter(c.words); ok {
+				qs = append(qs, Quote(keep))
+			}
+		}
+		for _, w := range pipe {
+			qs = append(qs, Quote(w.words))
+		}
+		if len(qs) > 0 {
+			filtered = append(filtered, ASK+Quote(q)+" | "+strings.Join(qs, " | "))
 		} else {
 			asked = append(asked, q...)
 		}
@@ -1420,8 +2149,40 @@ func Detect(data map[string]any) string {
 	return "claude"
 }
 
-func Answer(agent, asked string) map[string]any {
+// Decide: the hook's answer for this call, or nil when it goes ahead: in Claude Code a shell line of reads only runs
+// through the map in its place; any other read of the code or the docs is refused with its ask.
+func Decide(agent string, data map[string]any) map[string]any {
+	asked := Replacement(agent, data)
+	if asked == "" {
+		return nil
+	}
+	kind, given, cwd := normalise(agent, data)
+	line := ""
+	if agent == "claude" && kind == "shell" {
+		line = rewrite(str(given["command"]), cwd)
+	}
+	if line != "" {
+		in := map[string]any{}
+		for k, v := range given {
+			in[k] = v
+		}
+		in["command"] = line
+		return map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PreToolUse", "permissionDecision": "allow",
+			"permissionDecisionReason": "map-guard: read through the map", "updatedInput": in, "additionalContext": NOTE + line}}
+	}
+	again := ""
+	if kind == "shell" {
+		again = resend(str(given["command"]), cwd)
+	}
+	return Answer(agent, asked, again)
+}
+
+// Answer: the refusal: the asks, or, for a line of reads beside other steps, the whole line to send again.
+func Answer(agent, asked, again string) map[string]any {
 	reason := REASON + asked
+	if again != "" {
+		reason, asked = REASON_LINE+again, again
+	}
 	switch agent {
 	case "cursor":
 		return map[string]any{"permission": "deny", "user_message": "map-guard: read it through the map (ask). " + asked, "agent_message": reason}
@@ -1550,6 +2311,11 @@ func Main(argv []string) {
 		cwd, _ := os.Getwd()
 		if asked := ShellQuestion(argv[1], cwd); asked != "" {
 			fmt.Println(asked)
+			if line := rewrite(argv[1], cwd); line != "" {
+				fmt.Println("Claude Code runs in its place: " + line)
+			} else if again := resend(argv[1], cwd); again != "" {
+				fmt.Println("Send instead: " + again)
+			}
 		} else {
 			fmt.Println("goes ahead")
 		}
@@ -1569,8 +2335,8 @@ func Main(argv []string) {
 	if agent == "" {
 		agent = Detect(data)
 	}
-	if asked := Replacement(agent, data); asked != "" {
-		fmt.Println(JSON(Answer(agent, asked), ""))
+	if out := Decide(agent, data); out != nil {
+		fmt.Println(JSON(out, ""))
 	}
 }
 

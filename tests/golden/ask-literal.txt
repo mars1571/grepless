@@ -1,0 +1,21 @@
+rc=0
+== total(
+  shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+25	def line_total(code, quantity):
+29	def total(cart):
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+37	    return [(code, q, line_total(code, q)) for code, q in cart.lines.items()], total(cart)
+  tests.cart.totals  tests/test_cart.py:1-20  a cart's total adds the lines and takes the discounts off
+15	        self.assertEqual(total(cart), 2 * 120 + 250)
+  tests.cart.discounts  tests/test_cart.py:23-39  the bulk discount past the quantity, and the coupon on the whole cart
+28	        self.assertEqual(total(cart), 1200 - 180)
+34	        self.assertEqual(total(cart), 640 - 32)
+== function render
+  web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field
+4	export function render(summary, total) {
+== a|b
+  nothing in the code or the docs holds it
+== cart.lines
+  shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+31	    subtotal = sum(line_total(code, q) for code, q in cart.lines.items())
+37	    return [(code, q, line_total(code, q)) for code, q in cart.lines.items()], total(cart)

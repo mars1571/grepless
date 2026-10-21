@@ -100,9 +100,30 @@ func stamp(s string) (float64, bool) {
 	return float64(t.Unix()) + float64(t.Nanosecond())/1e9, true // exact to the millisecond, as Python's
 }
 
+// said: the text of a tool's result: a string, or the text of its parts.
+func said(content any) string {
+	switch x := content.(type) {
+	case string:
+		return x
+	case []any:
+		var b strings.Builder
+		for _, p := range x {
+			if m, ok := p.(map[string]any); ok {
+				if t, ok := m["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+type kindOf struct{ id, kind string }
+
 type call struct {
 	ctx         int
-	kinds       []string
+	kinds       []kindOf
 	since, last float64
 	hasSince    bool
 }
@@ -129,6 +150,7 @@ func calls(path string) ([]row, []int, int) {
 	}
 	uses := map[string]use{}
 	refused := map[string]bool{}
+	mapped := map[string]bool{}
 	var prev float64
 	hasPrev := false
 	sc := bufio.NewScanner(f)
@@ -146,6 +168,8 @@ func calls(path string) ([]row, []int, int) {
 					b, _ := json.Marshal(xm["content"])
 					if strings.Contains(string(b), "through its map") {
 						refused[fmt.Sprint(xm["tool_use_id"])] = true
+					} else if strings.HasPrefix(said(xm["content"]), "== ") {
+						mapped[fmt.Sprint(xm["tool_use_id"])] = true // the map's answer: a line the guard ran through the map
 					}
 				}
 			}
@@ -204,7 +228,7 @@ func calls(path string) ([]row, []int, int) {
 				if xm, ok := x.(map[string]any); ok && xm["type"] == "tool_use" {
 					in, _ := xm["input"].(map[string]any)
 					name, _ := xm["name"].(string)
-					c.kinds = append(c.kinds, looks(name, in))
+					c.kinds = append(c.kinds, kindOf{fmt.Sprint(xm["id"]), looks(name, in)})
 				}
 			}
 		}
@@ -214,7 +238,7 @@ func calls(path string) ([]row, []int, int) {
 	}
 	outside := 0
 	for id, u := range uses {
-		if refused[id] {
+		if refused[id] || mapped[id] {
 			continue
 		}
 		data := map[string]any{"tool_name": u.name, "tool_input": u.in, "cwd": u.cwd}
@@ -228,7 +252,11 @@ func calls(path string) ([]row, []int, int) {
 		kind := ""
 		if len(c.kinds) > 0 {
 			kind = "other"
-			for _, k := range c.kinds {
+			for _, ko := range c.kinds {
+				k := ko.kind
+				if mapped[ko.id] && k == "other" {
+					k = "map"
+				}
 				if k == "" {
 					kind = ""
 					break
@@ -263,11 +291,100 @@ func f1(x float64, ok bool) string {
 	return fmt.Sprintf("%.1f", x)
 }
 
+// measure: one transcript: [calls, context, search/read calls, their context, via map, asks, questions, outside, runs],
+// and its response times under and over 300k tokens.
+func measure(p string) ([]int, []float64, []float64) {
+	cs, asked, outside := calls(p)
+	r := make([]int, 9)
+	r[0] = len(cs)
+	runs, run := 0, 0
+	var lo, hi []float64
+	for _, c := range cs {
+		r[1] += c.ctx
+		if c.kind != "" {
+			r[2]++
+			r[3] += c.ctx
+			if c.kind == "map" {
+				r[4]++
+			}
+			run++
+		} else {
+			if run >= 8 {
+				runs++
+			}
+			run = 0
+		}
+		if c.secs > 0 {
+			if c.ctx < 300000 {
+				lo = append(lo, c.secs)
+			} else {
+				hi = append(hi, c.secs)
+			}
+		}
+	}
+	if run >= 8 {
+		runs++
+	}
+	r[5] = len(asked)
+	for _, a := range asked {
+		r[6] += a
+	}
+	r[7] = outside
+	r[8] = runs
+	return r, lo, hi
+}
+
+// spend is a session's cost in USD and whether some model's price was unknown.
+type spend struct {
+	usd     float64
+	unknown bool
+}
+
+// cost is the largest totalCostUSD of the session's cost-state records, or nil when it has none.
+func cost(p string) *spend {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var best *spend
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<28)
+	for sc.Scan() {
+		if !strings.Contains(sc.Text(), `"cost-state"`) {
+			continue
+		}
+		var d map[string]any
+		if json.Unmarshal(sc.Bytes(), &d) != nil || d["type"] != "cost-state" {
+			continue
+		}
+		v, ok := d["totalCostUSD"].(float64)
+		if !ok {
+			continue
+		}
+		u := d["hasUnknownModelCost"] == true
+		if best == nil {
+			best = &spend{v, u}
+		} else {
+			best.usd, best.unknown = max(best.usd, v), best.unknown || u
+		}
+	}
+	return best
+}
+
 func report(paths []string) {
-	fmt.Printf("%-19s%6s%8s%16s%8s%8s%6s%6s%8s%8s%8s%8s\n", "session", "calls", "read M", "search/read", "their M", "via map", "asks", "q/ask", "outside", "runs 8+", "s <300k", "s >300k")
-	total := make([]int, 9)
+	fmt.Printf("%-19s%6s%7s%8s%8s%16s%8s%8s%6s%6s%8s%8s%8s%8s\n", "session", "calls", "agents", "$", "read M", "search/read", "their M", "via map", "asks", "q/ask", "outside", "runs 8+", "s <300k", "s >300k")
+	total := make([]int, 10)
 	var allLo, allHi []float64
-	line := func(name string, r []int, lo, hi []float64) {
+	var spent *spend
+	line := func(name string, r []int, lo, hi []float64, usd *spend) {
+		money := "-"
+		if usd != nil {
+			money = fmt.Sprintf("%.2f", usd.usd)
+			if usd.unknown {
+				money += "+"
+			}
+		}
 		perAsk := 0.0
 		if r[5] > 0 {
 			perAsk = float64(r[6]) / float64(r[5])
@@ -275,49 +392,25 @@ func report(paths []string) {
 		ml, okl := median(lo)
 		mh, okh := median(hi)
 		share := fmt.Sprintf("%.0f", float64(r[2])/float64(r[0])*100) // a tie to the even digit, as Python's format
-		fmt.Printf("%-19s%6d%8.1f%9d (%3s%%)%8.1f%8d%6d%6.1f%8d%8d%8s%8s\n", name, r[0], float64(r[1])/1e6, r[2], share, float64(r[3])/1e6, r[4], r[5], perAsk, r[7], r[8], f1(ml, okl), f1(mh, okh))
+		fmt.Printf("%-19s%6d%7d%8s%8.1f%9d (%3s%%)%8.1f%8d%6d%6.1f%8d%8d%8s%8s\n", name, r[0], r[9], money, float64(r[1])/1e6, r[2], share, float64(r[3])/1e6, r[4], r[5], perAsk, r[7], r[8], f1(ml, okl), f1(mh, okh))
 	}
 	for _, p := range paths {
-		cs, asked, outside := calls(p)
-		if len(cs) == 0 {
+		// the subagents' calls are the session's
+		subs, _ := filepath.Glob(filepath.Join(filepath.Dir(p), strings.TrimSuffix(filepath.Base(p), ".jsonl"), "subagents", "*.jsonl"))
+		sort.Strings(subs)
+		r := make([]int, 10)
+		r[9] = len(subs)
+		var lo, hi []float64
+		for _, t := range append([]string{p}, subs...) {
+			m, l, h := measure(t)
+			for k := range m {
+				r[k] += m[k]
+			}
+			lo, hi = append(lo, l...), append(hi, h...)
+		}
+		if r[0] == 0 {
 			continue
 		}
-		r := make([]int, 9)
-		r[0] = len(cs)
-		runs, run := 0, 0
-		var lo, hi []float64
-		for _, c := range cs {
-			r[1] += c.ctx
-			if c.kind != "" {
-				r[2]++
-				r[3] += c.ctx
-				if c.kind == "map" {
-					r[4]++
-				}
-				run++
-			} else {
-				if run >= 8 {
-					runs++
-				}
-				run = 0
-			}
-			if c.secs > 0 {
-				if c.ctx < 300000 {
-					lo = append(lo, c.secs)
-				} else {
-					hi = append(hi, c.secs)
-				}
-			}
-		}
-		if run >= 8 {
-			runs++
-		}
-		r[5] = len(asked)
-		for _, a := range asked {
-			r[6] += a
-		}
-		r[7] = outside
-		r[8] = runs
 		for k := range r {
 			total[k] += r[k]
 		}
@@ -344,10 +437,18 @@ func report(paths []string) {
 		if len(stem) > 8 {
 			stem = stem[:8]
 		}
-		line(day+" "+stem, r, lo, hi)
+		usd := cost(p)
+		if usd != nil {
+			if spent == nil {
+				spent = &spend{usd.usd, usd.unknown}
+			} else {
+				spent.usd, spent.unknown = spent.usd+usd.usd, spent.unknown || usd.unknown
+			}
+		}
+		line(day+" "+stem, r, lo, hi, usd)
 	}
 	if total[0] > 0 {
-		line("all", total, allLo, allHi)
+		line("all", total, allLo, allHi, spent)
 	}
 }
 

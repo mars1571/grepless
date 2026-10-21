@@ -12,18 +12,6 @@ const AGAIN: f64 = 5.0;
 
 fn text(v: Option<&Value>) -> String { v.and_then(|x| x.as_str()).unwrap_or("").to_string() }
 
-/// Python's truth of a JSON value: null, false, 0, "", [] and {} are false.
-fn truthy(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().map(|x| x != 0.0).unwrap_or(true),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
-}
-
 fn kind(tool: &str, given: &Map<String, Value>) -> &'static str {
     if !matches!(tool, "Bash" | "bash" | "powershell" | "Shell" | "run_shell_command") { return "work"; }
     let cmd = text(given.get("command"));
@@ -93,7 +81,6 @@ fn run() -> Option<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).ok()?;
     let data = match serde_json::from_str::<Value>(&input).ok()? { Value::Object(m) => m, _ => return None };
-    if truthy(data.get("agent_id")) { return None; }   // a subagent's calls are its own business
     if agent.is_empty() { agent = detect(&data).to_string(); }
     let (session, tool, given) = normalise(&agent, &data);
     if session.is_empty() { return None; }
@@ -102,6 +89,8 @@ fn run() -> Option<()> {
     if call.is_empty() { call = text(given.get("path")); }
     let dir = std::env::var("MAP_COACH_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::temp_dir().join("map-coach"));
     let name: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(64).collect();
+    let sub: String = text(data.get("agent_id")).chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(32).collect();   // a subagent counts its own reads
+    let name = if sub.is_empty() { name } else { format!("{}-{}", name, sub) };
     let file = dir.join(format!("{}.json", name));
     let state: Value = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);

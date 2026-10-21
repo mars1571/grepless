@@ -267,6 +267,63 @@ func Jdump(v any, indent, level int) string {
 	return fmt.Sprint(v)
 }
 
+// Jcompact is a value as one compact JSON document, like Python's json.dumps(separators=(",", ":"), ensure_ascii=False).
+func Jcompact(v any) string {
+	var b strings.Builder
+	writeCompact(&b, v)
+	return b.String()
+}
+
+func writeCompact(b *strings.Builder, v any) {
+	switch x := v.(type) {
+	case *OMap:
+		b.WriteByte('{')
+		for i, k := range x.Keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(Jstr(k) + ":")
+			writeCompact(b, x.Vals[k])
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range x {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writeCompact(b, e)
+		}
+		b.WriteByte(']')
+	case []string:
+		arr := make([]any, len(x))
+		for i, s := range x {
+			arr[i] = s
+		}
+		writeCompact(b, arr)
+	default:
+		b.WriteString(Jdump(v, 0, 0))
+	}
+}
+
+// Obj builds an ordered JSON object from key, value pairs.
+func Obj(kv ...any) *OMap {
+	m := NewOMap()
+	for i := 0; i+1 < len(kv); i += 2 {
+		m.Set(kv[i].(string), kv[i+1])
+	}
+	return m
+}
+
+// Strs is a list of texts for JSON that is [] and never null when empty.
+func Strs(xs []string) []any {
+	out := make([]any, len(xs))
+	for i, s := range xs {
+		out[i] = s
+	}
+	return out
+}
+
 func wrap(open, close string, parts []string, indent, level int) string {
 	if indent == 0 {
 		return open + strings.Join(parts, ", ") + close
@@ -550,7 +607,7 @@ func Setup(argv []string) []string {
 	MAP = filepath.Join(ROOT, "map.yaml")
 	ZONES = filepath.Join(ROOT, "map")
 	CFG = Config{Command: "python3 tools/map.py", Roots: []string{"src", "lib", "app", "apps", "packages", "pkg", "internal", "cmd", "services"},
-		Areas: NewOMap(), Holds: NewOMap(), Forms: map[string]string{}, Limits: map[string]int{"untagged": 30, "block": 16000},
+		Areas: NewOMap(), Holds: NewOMap(), Forms: map[string]string{}, Limits: map[string]int{"untagged": 30, "block": 16000, "answer": 28000},
 		Recipes: NewOMap(), Guard: map[string]any{"skip": []any{}}}
 	if b, err := os.ReadFile(filepath.Join(ROOT, "map.json")); err == nil {
 		v, err := ParseJSON(string(b))

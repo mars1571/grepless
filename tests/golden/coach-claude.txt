@@ -17,8 +17,17 @@
 (nothing printed: the call goes ahead)
 == python3 tools/map.py ask shop.cart.totals | head -40 (rc=0)
 (nothing printed: the call goes ahead)
-== a subagent (rc=0)
+== a subagent: python3 tools/map.py ask shop.cart.totals | head -40 (rc=0)
 (nothing printed: the call goes ahead)
+== a subagent: tools/map ask total --in src/shop (rc=0)
+(nothing printed: the call goes ahead)
+== a subagent: node tools/map.mjs ask coupon (rc=0)
+{
+ "hookSpecificOutput": {
+  "additionalContext": "Three reads of the map in a row (AGENTS.md, \"Finding code\"): ask in one call every question you can already name, the blocks, names and line ranges these answers point to, and send the calls that do not depend on each other in one message.",
+  "hookEventName": "PostToolUse"
+ }
+}
 == not json (rc=0)
 (nothing printed: the call goes ahead)
 == no session (rc=0)

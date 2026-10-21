@@ -67,7 +67,7 @@ pub fn parse(p: &str, text: &str) -> (Vec<Block>, Vec<(usize, String)>, Vec<usiz
         let Some((kind, id, purpose)) = tag_match(pat, line) else {
             if pat.looks.is_match(line) {
                 problems.push((n, "a tag that cannot be read: \"@map <id>: <purpose>\" or \"@end <id>\", alone on its line".to_string()));
-            } else if line.starts_with("#!") && n > 1 {
+            } else if line.starts_with("#!") && !line.starts_with("#![") && n > 1 {
                 problems.push((n, "the #! line must stay the first line: put the tag below it".to_string()));
             }
             continue;

@@ -93,7 +93,7 @@ func Parse(p, text string) ([]*Block, [][2]any, []int) {
 		if !ok {
 			if pat.looks.MatchString(line) {
 				problems = append(problems, [2]any{n, `a tag that cannot be read: "@map <id>: <purpose>" or "@end <id>", alone on its line`})
-			} else if strings.HasPrefix(line, "#!") && n > 1 {
+			} else if strings.HasPrefix(line, "#!") && !strings.HasPrefix(line, "#![") && n > 1 {
 				problems = append(problems, [2]any{n, "the #! line must stay the first line: put the tag below it"})
 			}
 			continue

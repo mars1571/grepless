@@ -7,7 +7,8 @@ in the code; what agents ask it instead of grepping. Start a task with brief, re
     <map> brief <words>    where a task starts: the components the words name, their blocks and lines, what
                                 they declare, need and are needed by, their tests, docs and latest commits, then
                                 the first round of questions to ask, in one call
-    <map> ask <question> [<question> …] [--in <paths>] [--all]
+    <map> pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered, in one call
+    <map> ask <question> [<question> …] [--in <paths>] [--all] [--budget N]
                                 the one way to read and locate: every question of a round in one call, each
                                 answered whole: a block id (its code), an identifier (what it is, the code declaring
                                 it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,

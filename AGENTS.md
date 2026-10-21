@@ -27,7 +27,7 @@ whole conversation, so questions go in rounds: every question of a round in one 
    with a script that only prints them, or with a file-reading tool on whole files**: `ask` answers the same
    question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a
    range of lines before an edit.
-4. **Tag what you add or move** (`docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
+4. **Tag what you add or move** (`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
    `@end <id>` when other code follows it; keep purposes true. **End each change with `python3 python/map.py check`**, which also
    checks that the map is current (`python3 python/map.py build` writes it again).
 
@@ -53,7 +53,7 @@ The four practices of [docs/METHOD.md](docs/METHOD.md), in this repository:
 ## Measuring a session
 
 `python3 python/map-sessions.py` reads Claude Code's transcripts of this folder (the `.jsonl` files in the folder of
-`~/.claude/projects/` named after this one's path) and prints one line per session: the model calls, the context re-read, the
+`~/.claude/projects/` named after this one's path, each with its subagents' transcripts) and prints one line per session: the model calls, the subagents, the cost in USD (`$`: the largest `totalCostUSD` of the session's `cost-state` records, which already includes its subagents; `-` with none, a trailing `+` when a model's price was unknown, so at least that much), the context re-read, the
 calls that only searched or read and how many of them went through the map, the asks and the questions per ask,
 the reads of the code that ran outside the map, the runs of eight or more reading calls in a row, and the model's
 median response time under and over 300k tokens of context. `--since YYYY-MM-DD` keeps the recent sessions; a

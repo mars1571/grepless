@@ -1,0 +1,12 @@
+rc=0
+{
+ "hookSpecificOutput": {
+  "additionalContext": "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  (cd <root> && git status --short | head -3; which python3; <map> ask src/shop/cart.py:1-5; pwd)",
+  "hookEventName": "PreToolUse",
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "map-guard: read through the map",
+  "updatedInput": {
+   "command": "(cd <root> && git status --short | head -3; which python3; <map> ask src/shop/cart.py:1-5; pwd)"
+  }
+ }
+}

@@ -2,8 +2,9 @@
 # @map map.coach.remind: once and in the moment, after three reads of the map in a row, the reminder to ask every question of a round in one call
 """map-coach: a post-tool hook that reminds the agent of the working loop when it drifts from it, once each time and
 never blocking: after three calls in a row that only read the map, one question or two at a time, it says to put every
-question of a round in one call. Its state is a small file per session in the system's temporary folder. Anything it
-cannot read goes ahead without a word.
+question of a round in one call. Its state is a small file per session in the system's temporary folder, and one per
+subagent (Claude Code's agent_id): a subagent's reads are counted apart from its session's. Anything it cannot read goes
+ahead without a word.
 
     python3 tools/map-coach.py [--agent claude|codex|cursor|copilot|gemini]   the hook: stdin in, the reminder out
 
@@ -94,7 +95,7 @@ def main(argv):
         data = json.load(sys.stdin)
     except ValueError:
         return
-    if not isinstance(data, dict) or data.get('agent_id'):           # a subagent's calls are its own business
+    if not isinstance(data, dict):
         return
     agent = agent or detect(data)
     session, tool, given = normalise(agent, data)
@@ -102,7 +103,8 @@ def main(argv):
         return
     given = given if isinstance(given, dict) else {}
     call = str(given.get('command') or given.get('file_path') or given.get('path') or '')
-    path = os.path.join(DIR, re.sub(r'[^A-Za-z0-9_]', '', str(session))[:64] + '.json')
+    sub = re.sub(r'[^A-Za-z0-9_]', '', str(data.get('agent_id') or ''))[:32]          # a subagent counts its own reads
+    path = os.path.join(DIR, re.sub(r'[^A-Za-z0-9_]', '', str(session))[:64] + (f'-{sub}' if sub else '') + '.json')
     try:
         with open(path) as f:
             state = json.load(f)

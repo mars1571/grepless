@@ -1,0 +1,2 @@
+rc=0
+{"declarations":[{"name":"money","what":"function money","in":"web.format.money","file":"src/web/format.js","first":2,"last":4}],"blocks":[{"id":"web.format.money","file":"src/web/format.js","first":1,"last":9,"lines":9,"purpose":"cents as money text in the shop's currency, and a quantity with its unit"},{"id":"tests.format.money","file":"tests/format.test.js","first":1,"last":9,"lines":9,"purpose":"money text with two decimals and the currency, units in the singular and the plural"}],"more":0}

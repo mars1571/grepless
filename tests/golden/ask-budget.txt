@@ -1,0 +1,21 @@
+rc=0
+== shop.cart.totals
+  src/shop/cart.py:24-38  shop.cart.totals: the totals: each line's amount and discount, the coupon on the rest, and the sum in cents
+  … 15 lines of code left out to keep this call under 1,500 characters: ask shop.cart.totals in a call of its own
+== src/web/cart.js
+  src/web/cart.js: 20 lines, whole
+  … 20 lines of code left out to keep this call under 1,500 characters: ask src/web/cart.js in a call of its own
+== total
+  function total: src/shop/cart.py:29-32  in shop.cart.totals
+  named on 19 other lines
+    README.md:1-12  # Example: a tagged shop: 9
+    docs/CART.md:1-16  # The cart: 3
+    docs/CART.md:13-16  ## The page: 15
+    map.json: 12, 20
+    shop.cart.totals  src/shop/cart.py:24-38  the totals: each line's amount and discount, the coupon on the rest, and the sum in cents: 36, 37
+    web.cart.styles  src/web/cart.css:1-5  the cart table and its total, aligned amounts, the coupon field: 1, 3
+    web.cart.render  src/web/cart.js:1-14  the cart drawn on the page: one row per line, the total, and the coupon field: 1, 4, 8
+    web.cart.markup  src/web/index.html:9-15  the cart's table, its total line and the coupon field with its button: 9, 12
+    tests.cart.totals  tests/test_cart.py:1-20  a cart's total adds the lines and takes the discounts off: 1, 7, 15
+    tests.cart.discounts  tests/test_cart.py:23-39  the bulk discount past the quantity, and the coupon on the whole cart: 28, 34
+  … 4 lines of code left out to keep this call under 1,500 characters: ask total in a call of its own

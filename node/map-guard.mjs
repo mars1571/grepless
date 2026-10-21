@@ -37,11 +37,18 @@ const NAMED = new Set(['Makefile', 'GNUmakefile', 'Dockerfile', 'Containerfile',
 const SKIP = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'venv', '.venv', '__pycache__', '.git', '.hg', '.svn', '.tox', '.mypy_cache',
   '.pytest_cache', '.cache', 'coverage', '.idea', '.vscode', 'bower_components', '.next', '.nuxt', '.terraform', 'Pods', 'DerivedData', 'map']);
 const SEARCH = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
-const READ = new Set(['cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more', 'bat', 'cut', 'strings', 'xxd', 'od', 'perl', 'ruby']);
+const READ = new Set(['cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more', 'bat', 'cut', 'sort', 'uniq', 'strings', 'xxd', 'od', 'perl', 'ruby']);
+const FILE_FILTERS = { cut: 'bcdf', sort: 'ktTS', uniq: 'fsw' };                            // filters that read a file given to them: the flags that take a value
 const LIST = new Set(['ls', 'find', 'tree', 'fd']);
 const FILTERS = new Set(['head', 'tail', 'cut', 'grep', 'egrep', 'sort', 'uniq', 'wc', 'sed', 'awk', 'tr', 'column']);
+const KEPT = new Set(['head', 'tail', 'cut', 'grep', 'egrep', 'sort', 'uniq', 'wc', 'tr', 'column']);   // filters a line run in its place keeps: none runs a command or writes
+const QUIET = new Set(['echo', 'printf', 'true', ':', 'wc']);                                            // steps a line run in its place keeps as they are
 const REASON = "This repository's code and docs are read and located through its map, every question of a round in one call "
   + '(AGENTS.md, "Finding code"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  ';
+const REASON_LINE = "This repository's code and docs are read and located through its map, every question of a round in one call "
+  + '(AGENTS.md, "Finding code"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  ';
+const NOTE = 'map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, "Finding code"; '
+  + 'next time, ask every question of a round in one call):\n  ';
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
 const expanduser = p => p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
 
@@ -114,6 +121,7 @@ const quote = words => words.map(quoteWord).join(' ');
 
 // @map map.guard.commands: a shell line into its commands (heredocs left out, cd followed), and each command's map question
 const PUNCT = '();<>|&';
+const QUIET_REDIRECT = /&>\s*\/dev\/null|\d?>&\d|\d?>\s*\/dev\/null/g;     // stderr or all output thrown away: no word of the command
 function shellWords(line) {
   const out = []; let word = '', i = 0, quote_ = null, had = false; const n = line.length;
   while (i < n) {
@@ -161,7 +169,7 @@ function withoutHeredocs(line) {
   return line;
 }
 function commands(line, cwd) {
-  line = withoutHeredocs(line).split('\\\n').join(' ').split('\n').join(' ; ').replace(/\d?>&\d|\d?>\s*\/dev\/null/g, ' ');
+  line = withoutHeredocs(line).split('\\\n').join(' ').split('\n').join(' ; ').replace(QUIET_REDIRECT, ' ');
   const split = [];
   for (const t of shellWords(line)) { if (/^[|&;()<>]+$/.test(t)) split.push(...(t.match(/\|\||&&|\|&|;;|>>|&>|[|&;()<>]/g) || [])); else split.push(t); }
   const out = []; let words = [], piped = false, base = cwd;
@@ -173,7 +181,7 @@ function commands(line, cwd) {
   }
   return out;
 }
-function grepQuestion(words, base) {
+function grepParts(words) {
   const pats = [], paths = [], includes = [], flags = new Set(); let i = 1;
   while (i < words.length) {
     const a = words[i];
@@ -187,6 +195,10 @@ function grepQuestion(words, base) {
   }
   let pats_ = pats, paths_ = paths;
   if (!pats.length && paths.length) { pats_ = [paths[0]]; paths_ = paths.slice(1); }
+  return [pats_, paths_, includes, flags];
+}
+function grepQuestion(words, base) {
+  const [pats_, paths_, includes, flags] = grepParts(words);
   if (['c', 'q', 'l', 'L', '--count', '--quiet', '--silent', '--files-with-matches', '--files-without-match'].some(f => flags.has(f))) return null;
   const recursive = ['rg', 'ag', 'ack'].includes(words[0]) || ['r', 'R', '--recursive'].some(f => flags.has(f));
   if (!paths_.length && !recursive) return null;
@@ -209,14 +221,29 @@ function grepQuestion(words, base) {
   if (flags.has('i')) rx = '(?i)' + rx;
   return [rx, ...(places.length ? ['--in', places.join(',')] : [])];
 }
+function fileFilter(words) {
+  const tool = path.basename(words[0]), keep = [words[0]], files = []; let skip = false;
+  for (const a of words.slice(1)) {
+    if (skip) { keep.push(a); skip = false; }
+    else if (a.startsWith('--') && a.length > 2) { if (a.startsWith('--output')) return null; keep.push(a); }
+    else if (a.startsWith('-') && a.length > 1) {
+      if (tool === 'sort' && a.slice(1).includes('o')) return null;
+      keep.push(a); skip = a.length === 2 && FILE_FILTERS[tool].includes(a[1]);
+    } else files.push(a);
+  }
+  return tool === 'uniq' && files.length > 1 ? null : [keep, files];
+}
+function readFiles(words) {
+  const tool = words[0], args = words.slice(1);
+  if (tool in FILE_FILTERS) { const found = fileFilter(words); return [null, found ? found[1] : []]; }
+  if (tool === 'sed' || tool === 'awk') { const rest = args.filter(a => !a.startsWith('-')); return [tool === 'sed' && rest.length ? rest[0] : null, rest.slice(1)]; }
+  return [null, args.filter((a, k) => !a.startsWith('-') && !(k && ['-n', '-c', '-f', '-d'].includes(args[k - 1])))];
+}
 function readQuestion(words, base) {
   const tool = words[0], args = words.slice(1);
   if (tool === 'sed' && args.some(a => a.startsWith('-i') || a === '--in-place')) return null;
   if ((tool === 'perl' || tool === 'ruby') && args.some(a => /^-\w*i\S*$/.test(a))) return null;
-  let script = null, files;
-  if (tool === 'sed') { const rest = args.filter(a => !a.startsWith('-')); script = rest.length ? rest[0] : null; files = rest.slice(1); }
-  else if (tool === 'awk') files = args.filter(a => !a.startsWith('-')).slice(1);
-  else files = args.filter((a, k) => !a.startsWith('-') && !(k && ['-n', '-c', '-f', '-d'].includes(args[k - 1])));
+  const [script, files] = readFiles(words);
   let n = 10, fromStart = false;
   args.forEach((a, k) => {
     const m = /^-n(\+?\d+)?$|^-(\d+)$/.exec(a);
@@ -308,6 +335,217 @@ function scriptQuestion(line, cwd) {
 }
 // @end map.guard.commands.scripts
 
+// @map map.guard.commands.rewrite: a line that edits a file, whose reads check the edit; a line of reads only, run through the map in its place
+const SIMPLE_SED = /^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p|\d+q)$/;                       // sed -n 5,20p: a range of lines, nothing that runs or writes
+const SIMPLE_AWK = /^NR\s*(?:>=|<=|==|<|>)\s*\d+(?:\s*&&\s*NR\s*(?:>=|<=|==|<|>)\s*\d+)?$/;   // awk 'NR>=5 && NR<=20'
+const SYNTAX = new Set(['for', 'in', 'case', 'select', 'done', 'fi', 'esac', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '{', '}', '!', 'function']);
+const SEGMENT = /^(\s*)((?:(?:do|then|else|elif|if|while|until|!|\{|time)\s+)*)([\s\S]*?)(\s*)$/;
+const GIT_READ = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'branch']);
+const GIT_BRANCH_FLAGS = new Set(['--list', '--all', '--remotes', '--verbose', '--show-current', '--no-color', '--color', '--ignore-case', '--merged',
+  '--no-merged', '--contains', '--no-contains', '--points-at', '--sort', '--format', '--abbrev', '--column', '--no-column']);
+const GIT_BRANCH_VALUES = new Set(['--merged', '--no-merged', '--contains', '--no-contains', '--points-at', '--sort', '--format', '--abbrev']);
+const same_ = (a, b) => path.resolve(realpath(a)) === path.resolve(realpath(b));
+function lineWrites(line, cwd) {
+  for (const [words, , base] of commands(line, cwd)) {
+    const tool = path.basename(words[0]);
+    const targets = [...words.slice(0, -1).flatMap((w, k) => (['>', '>>', '&>'].includes(w) ? [words[k + 1]] : [])), ...(tool === 'tee' ? words.slice(1) : [])];
+    if (targets.some(t => !t.includes('$') && !t.startsWith('-') && inside(t, base) !== null)) return true;
+    if (tool === 'patch' || (tool === 'git' && words[1] === 'apply')) return true;
+    if (tool === 'sed' && words.slice(1).some(a => a.startsWith('-i') || a === '--in-place')) return true;
+    if ((tool === 'perl' || tool === 'ruby') && words.slice(1).some(a => /^-\w*i\S*$/.test(a))) return true;
+  }
+  return scripts(line, cwd).some(writes);
+}
+function isMap(words) {
+  const head = ASK.split(/\s+/).filter(Boolean).slice(0, -1);
+  return head.length <= words.length && head.every((h, i) => words[i] === h);
+}
+function whole(words, base) {
+  let tool = path.basename(words[0]);
+  if (tool === 'git' && words[1] === 'grep') { tool = 'grep'; words = words.slice(1); }
+  if (SEARCH.has(tool)) return grepParts([tool, ...words.slice(1)])[1].every(p => mapped(inside(p, base)));
+  if (READ.has(tool)) return readFiles([tool, ...words.slice(1)])[1].every(f => mapped(inside(f, base), false));
+  if (tool === 'ls' || tool === 'tree') return words.slice(1).filter(a => !a.startsWith('-')).every(a => mapped(inside(a, base)));
+  return tool === 'find';
+}
+function splitLine(line) {
+  if (heredocs(line).length) return null;
+  const out = []; let buf = [], sep = '', quote_ = null, i = 0; const n = line.length;
+  const last = () => (buf.length ? buf[buf.length - 1].slice(-1) : '');
+  while (i < n) {
+    const c = line[i], nxt = line.slice(i + 1, i + 2);
+    if (quote_ === "'") { if (c === "'") quote_ = null; }
+    else if (c === '\\' && nxt) { buf.push(line.slice(i, i + 2)); i += 2; continue; }
+    else if (c === '`' || line.startsWith('$(', i)) return null;
+    else if (quote_ === '"') { if (c === '"') quote_ = null; }
+    else if (c === '\'' || c === '"') quote_ = c;
+    else if (c === '#' && (!buf.length || /\s/.test(last()))) {
+      let j = line.indexOf('\n', i); j = j < 0 ? n : j;
+      buf.push(line.slice(i, j)); i = j; continue;
+    } else {
+      const op = c === '\n' ? '\n' : line.startsWith(';;', i) ? ';;' : c === ';' ? ';' : line.startsWith('||', i) ? '||' : line.startsWith('|&', i) ? '|&'
+        : c === '|' ? '|' : c === '(' ? '(' : c === ')' ? ')'
+        : (c !== '&' || (buf.length && ['<', '>'].includes(last())) || nxt === '>') ? null : nxt === '&' ? '&&' : '&';
+      if (op) { out.push([sep, buf.join('')]); sep = op; buf = []; i += op.length; continue; }
+    }
+    buf.push(c); i++;
+  }
+  out.push([sep, buf.join('')]);
+  return out;
+}
+function steps(line, cwd) {
+  const segs = splitLine(line);
+  if (segs === null) return null;
+  const out = [], stack = []; let base = cwd;
+  for (let k = 0; k < segs.length; k++) {
+    const [sep, text] = segs[k];
+    if (sep === '(') stack.push(base);
+    else if (sep === ')' && stack.length) base = stack.pop();
+    const [, lead, prefix, core, trail] = SEGMENT.exec(text);
+    const words = shellWords(core.replace(QUIET_REDIRECT, ' '));
+    const names = words.filter(w => !/^[A-Za-z_]\w*=.*$/.test(w));
+    const piped = k > 0 && (sep === '|' || sep === '|&');
+    const kind = !names.length || SYNTAX.has(words[0]) || !words.length ? 'syntax' : words[0] === 'cd' && !piped ? 'cd' : 'cmd';
+    out.push({ sep, lead, prefix, core, trail, words, kind, piped, base, redirected: words.some(w => /^[<>&]+$/.test(w)) });
+    if (kind === 'cd') {
+      const target = words.length === 2 ? words[1] : null;
+      base = target === null || target.includes('$') || target === '-' ? null : path.resolve(base, expanduser(target));
+    }
+    if (base === null && k + 1 < segs.length) return null;
+  }
+  return out;
+}
+function anchored(base, text) {
+  return same_(base, ROOT) ? text : `(cd ${quoteWord(ROOT)} && ${text})`;
+}
+
+// @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
+function gitReadOnly(words, base) {
+  const args = words.slice(1); let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    if (args[i] === '-C' && i + 1 < args.length) { base = path.resolve(base, expanduser(args[i + 1])); i += 2; }
+    else if (args[i] === '--no-pager' || args[i] === '--no-optional-locks') i++;
+    else return false;
+  }
+  if (inside('.', base) === null || i >= args.length || !GIT_READ.has(args[i])) return false;
+  const sub = args[i], rest = args.slice(i + 1);
+  if (sub === 'branch') {
+    const listing = rest.some(a => a === '-l' || a === '--list' || /^-[a-z]*l[a-z]*$/.test(a));
+    for (let k = 0; k < rest.length; k++) {
+      const a = rest[k];
+      if (a.startsWith('--')) { if (!GIT_BRANCH_FLAGS.has(a.split('=')[0])) return false; }
+      else if (a.startsWith('-')) { if (!/^-[arvli]+$/.test(a)) return false; }
+      else if (!(listing || (k && GIT_BRANCH_VALUES.has(rest[k - 1])))) return false;     // a name with no listing flag makes a branch
+    }
+    return true;
+  }
+  return !rest.some(a => ['-O', '--open-files-in-pager', '--no-index', '--ext-diff', '--output'].includes(a) || a.startsWith('-O') || a.startsWith('--output='));
+}
+const dateReadOnly = args => args.every(a => a.startsWith('+') || ['-u', '--utc', '--universal', '-R', '--rfc-email'].includes(a) || /^(?:-I\w*|--iso-8601(=\w+)?)$/.test(a));
+const insideAll = (operands, base) => operands.every(a => inside(a, base) !== null);
+function safeHead(words, base) {
+  const tool = path.basename(words[0]), args = words.slice(1);
+  const operands = args.filter(a => !a.startsWith('-'));
+  if (SEARCH.has(tool)) {
+    const paths = grepParts(words)[1];
+    return !args.some(a => ['--pre', '--hostname-bin'].includes(a.split('=')[0])) && insideAll(paths.length ? paths : ['.'], base);
+  }
+  if (['cat', 'head', 'tail', 'nl', 'ls', 'tree'].includes(tool)) return insideAll(operands, base);
+  if (tool in FILE_FILTERS) return fileFilter(words) !== null && insideAll(operands, base);
+  if (tool === 'find') return !args.some(a => ['-exec', '-execdir', '-ok', '-okdir', '-delete'].includes(a) || a.startsWith('-fprint') || a.startsWith('-fls')) && insideAll(operands.length ? operands.slice(0, 1) : ['.'], base);
+  if (tool === 'sed') return args.filter(a => a.startsWith('-')).every(a => ['-n', '-E', '-r'].includes(a)) && operands.length > 0 && SIMPLE_SED.test(operands[0]) && insideAll(operands.slice(1), base);
+  if (tool === 'awk') return !args.some(a => a.startsWith('-')) && operands.length > 0 && SIMPLE_AWK.test(operands[0]) && insideAll(operands.slice(1), base);
+  return false;
+}
+function safeStep(words, base) {
+  const tool = path.basename(words[0]), args = words.slice(1);
+  if (isMap(words) || ['echo', 'printf', 'true', ':', 'pwd'].includes(tool)) return true;
+  if (tool === 'wc') return insideAll(args.filter(a => !a.startsWith('-')), base);
+  if (tool === 'date') return dateReadOnly(args);
+  if (tool === 'which') return args.every(a => !a.startsWith('-') || a === '-a' || a === '-s');
+  if (words[0] === 'command') return words.length > 2 && (words[1] === '-v' || words[1] === '-V');
+  if (words.length === 2 && args[0] === '--version' && !words[0].includes('/')) return true;
+  if (tool === 'git') return gitReadOnly(words, base);
+  return SEARCH.has(tool) && safeHead(words, base);                                   // grep -c file, grep -q …: a count or a yes
+}
+function filterOk(words) {
+  if (KEPT.has(path.basename(words[0]))) return true;
+  const operands = words.slice(1).filter(a => !a.startsWith('-'));
+  return path.basename(words[0]) === 'sed' && words.slice(1).filter(a => a.startsWith('-')).every(a => a === '-n') && operands.length === 1 && SIMPLE_SED.test(operands[0]);
+}
+// @end map.guard.commands.rewrite.readonly
+
+function chainRead(chain) {
+  const first = chain[0], words = first.words, base = first.base;
+  if (first.kind !== 'cmd') return ['syntax'];
+  if (first.redirected) return ['step'];
+  if (path.basename(words[0]) === 'find' && chain.length > 1 && chain[1].words[0] === 'xargs' && chain[1].words.length > 1 && SEARCH.has(path.basename(chain[1].words[1]))) {
+    let pattern = '*'; for (let j = 0; j < words.length; j++) if ((words[j] === '-name' || words[j] === '-iname') && j + 1 < words.length) { pattern = words[j + 1]; break; }
+    const root = words.slice(1).find(a => !a.startsWith('-')) || '.';
+    const q = grepQuestion([...chain[1].words.slice(1), '-r', root, '--include=' + pattern], base);
+    return q ? ['read', ASK + quote(q), 2] : ['step'];
+  }
+  const q = question(words, base);
+  if (!q) return ['step'];
+  const run = [];
+  for (const s of chain.slice(1)) { if (!s.words.length || !FILTERS.has(path.basename(s.words[0]))) break; run.push(s.words); }
+  if (counts(run)) return ['count'];
+  const own = path.basename(words[0]) in FILE_FILTERS ? fileFilter(words)[0] : null;
+  return ['read', ASK + quote(q) + (own ? ' | ' + quote(own) : ''), 1];
+}
+function rebuild(line, cwd, inPlace) {
+  const st = steps(line, cwd);
+  if (st === null || scriptQuestion(line, cwd)) return null;
+  const out = []; let replaced = false, ok = true, pure = true, k = 0;
+  while (k < st.length) {
+    let j = k + 1;
+    while (j < st.length && st[j].piped) j++;
+    const chain = st.slice(k, j), first = st[k];
+    const kind = chainRead(chain);
+    const used = kind[0] === 'read' ? kind[2] : 1;
+    for (const s of chain.slice(used)) {
+      ok = ok && s.words.length > 0 && filterOk(s.words) && !s.redirected;
+      pure = pure && s.words.length > 0 && FILTERS.has(path.basename(s.words[0]));
+    }
+    if (kind[0] === 'syntax') out.push(first.kind === 'cd' && inPlace ? { ...first, drop: 'transfer' } : first);
+    else if (kind[0] === 'read') {
+      replaced = true;
+      ok = ok && used === 1 && whole(first.words, first.base);                     // xargs could run anything
+      const text = first.lead + first.prefix + (inPlace ? kind[1] : anchored(first.base, kind[1])) + first.trail;
+      out.push({ ...first, text });
+      if (used === 2) out.push({ ...chain[1], drop: 'own' });
+    } else {
+      pure = false;
+      const words = first.words;
+      ok = ok && !first.redirected && (kind[0] === 'count' ? safeHead(words, first.base) && whole(words, first.base) : safeStep(words, first.base));
+      let text = first.lead + first.prefix + first.core + first.trail;
+      if (inPlace && !same_(first.base, ROOT)) text = first.lead + first.prefix + `(cd ${quoteWord(first.base)} && ${first.core.trim()})` + first.trail;
+      out.push({ ...first, text });
+    }
+    out.push(...chain.slice(used));
+    k = j;
+  }
+  const pieces = []; let carry = null;
+  for (const s of out) {
+    const sep = carry === null ? s.sep : carry;
+    if (s.drop === 'transfer') { carry = s.sep; continue; }
+    carry = null;
+    if (s.drop === 'own') continue;
+    pieces.push([sep, 'text' in s ? s.text : s.lead + s.prefix + s.core + s.trail]);
+  }
+  return [pieces.map(([sep, t]) => sep + t).join(''), replaced, ok, pure];
+}
+function rewrite(line, cwd) {
+  const built = rebuild(line, cwd, true);
+  if (!built || !built[1] || !built[2]) return null;
+  return `(cd ${quoteWord(ROOT)} && ` + built[0].trim() + ')';
+}
+function resend(line, cwd) {
+  const built = rebuild(line, cwd, false);
+  return built && built[1] && !built[3] ? built[0] : null;
+}
+// @end map.guard.commands.rewrite
+
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
 function question(words, base) {
   const tool = path.basename(words[0]);
@@ -318,8 +556,12 @@ function question(words, base) {
   if (LIST.has(tool)) return listQuestion([tool, ...words.slice(1)], base);
   return null;
 }
+function counts(pipe) {
+  return pipe.some(w => path.basename(w[0]) === 'wc' || (['grep', 'egrep', 'fgrep'].includes(path.basename(w[0])) && (grepParts(w)[3].has('c') || grepParts(w)[3].has('--count'))));
+}
 function shellQuestion(line, cwd) {
   if (line.includes('map.py') || line.includes('map.mjs') || (ASK.startsWith('map ') && (' ' + line.split('\n')[0] + ' ').includes(' map '))) return null;
+  if (lineWrites(line, cwd)) return null;                       // an edit: the reads beside it check it
   let asked = scriptQuestion(line, cwd) || []; const filtered = [], parts = commands(line, cwd);
   parts.forEach(([words, piped, base], k) => {
     if (piped || words.some(w => ['>', '>>', '&>'].includes(w)) || !words.length) return;
@@ -332,12 +574,15 @@ function shellQuestion(line, cwd) {
     } else q = question(words, base);
     if (!q) return;
     const pipe = [];
-    for (const [w, fed] of parts.slice(k + 1)) { if (!fed || !FILTERS.has(path.basename(w[0]))) break; pipe.push(quote(w)); }
-    if (pipe.length) filtered.push(ASK + quote(q) + ' | ' + pipe.join(' | ')); else asked = asked.concat(q);
+    for (const [w, fed] of parts.slice(k + 1)) { if (!fed || !FILTERS.has(path.basename(w[0]))) break; pipe.push(w); }
+    if (counts(pipe)) return;                                       // a count: nothing of the files is read
+    const own = path.basename(words[0]) in FILE_FILTERS ? fileFilter(words)[0] : null;   // cut -c1-9 file: the ask, then cut
+    if (own || pipe.length) filtered.push(ASK + quote(q) + ' | ' + [...(own ? [own] : []), ...pipe].map(quote).join(' | ')); else asked = asked.concat(q);
   });
   const all_ = [...(asked.length ? [ASK + quote(asked)] : []), ...filtered];
   return all_.length ? all_.join('; ') : null;
 }
+
 function readQuestionTool(filePath, cwd, offset, limit) {
   const rel = inside(filePath || '', cwd);
   if (!mapped(rel, false) || limit || offset) return null;
@@ -390,9 +635,19 @@ function detect(data) {
   if (data.hook_event_name === 'BeforeTool') return 'gemini';
   return 'claude';
 }
-function answer(agent, asked) {
-  const reason = REASON + asked;
-  if (agent === 'cursor') return { permission: 'deny', user_message: 'map-guard: read it through the map (ask). ' + asked, agent_message: reason };
+function decide(agent, data) {
+  const asked = replacement(agent, data);
+  if (!asked) return null;
+  const [kind, given, cwd] = normalise(agent, data);
+  const command = given.command || '';
+  const line = agent === 'claude' && kind === 'shell' ? rewrite(command, cwd) : null;
+  if (line) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'map-guard: read through the map',
+    updatedInput: { ...given, command: line }, additionalContext: NOTE + line } };
+  return answer(agent, asked, kind === 'shell' ? resend(command, cwd) : null);
+}
+function answer(agent, asked, again = null) {
+  const reason = again ? REASON_LINE + again : REASON + asked;
+  if (agent === 'cursor') return { permission: 'deny', user_message: 'map-guard: read it through the map (ask). ' + (again || asked), agent_message: reason };
   if (agent === 'copilot') return { permissionDecision: 'deny', permissionDecisionReason: reason };
   if (agent === 'gemini') return { decision: 'deny', reason };
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
@@ -421,16 +676,16 @@ function install(agent) {
 }
 function main(argv) {
   if (argv[0] === 'install' && argv.length === 2) return install(argv[1]);
-  if (argv[0] === 'try' && argv.length === 2) { process.stdout.write((shellQuestion(argv[1], process.cwd()) || 'goes ahead') + '\n'); return; }
+  if (argv[0] === 'try' && argv.length === 2) { const asked = shellQuestion(argv[1], process.cwd()); process.stdout.write((asked || 'goes ahead') + '\n'); const line = asked && rewrite(argv[1], process.cwd()); if (line) process.stdout.write('Claude Code runs in its place: ' + line + '\n'); else if (asked && resend(argv[1], process.cwd())) process.stdout.write('Send instead: ' + resend(argv[1], process.cwd()) + '\n'); return; }
   const ai = argv.indexOf('--agent'); let agent = ai >= 0 && ai + 1 < argv.length ? argv[ai + 1] : null;
-  let asked;
+  let out;
   try {
     const data = JSON.parse(fs.readFileSync(0, 'utf8'));
     if (!data || typeof data !== 'object' || Array.isArray(data)) return;
     agent = agent || detect(data);
-    asked = replacement(agent, data);
+    out = decide(agent, data);
   } catch { return; }
-  if (asked) process.stdout.write(JSON.stringify(answer(agent, asked)) + '\n');
+  if (out) process.stdout.write(JSON.stringify(out) + '\n');
 }
 export { replacement, shellQuestion };
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname)) main(process.argv.slice(2));

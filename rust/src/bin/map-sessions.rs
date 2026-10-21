@@ -50,10 +50,19 @@ fn stamp(s: &str) -> Option<f64> {
     Some(secs)
 }
 
-struct Call { ctx: u64, kinds: Vec<Option<&'static str>>, since: Option<f64>, last: Option<f64> }
+struct Call { ctx: u64, kinds: Vec<(String, Option<&'static str>)>, since: Option<f64>, last: Option<f64> }
 
 /// One model call: its context tokens, what it did ("map", "other", or None when it did more than read), its seconds.
 type Row = (u64, Option<&'static str>, Option<f64>);
+
+/// The text of a tool's result: a string, or the text of its parts.
+fn said(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_object()).map(|x| x.get("text").and_then(|t| t.as_str()).unwrap_or("")).collect(),
+        Some(Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
 
 fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
     let text = std::fs::read_to_string(path).unwrap_or_default();
@@ -61,6 +70,7 @@ fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
     let mut asked = Vec::new();
     let mut uses: HashMap<String, (String, Map<String, Value>, String)> = HashMap::new();
     let mut refused: HashSet<String> = HashSet::new();
+    let mut mapped: HashSet<String> = HashSet::new();
     let mut prev: Option<f64> = None;
     for line in text.lines() {
         let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
@@ -70,6 +80,8 @@ fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
             for x in content {
                 if x.get("type").and_then(|t| t.as_str()) == Some("tool_result") && x.get("content").map(|c| c.to_string()).unwrap_or_default().contains("through its map") {
                     refused.insert(x.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("").to_string());
+                } else if x.get("type").and_then(|t| t.as_str()) == Some("tool_result") && said(x.get("content")).starts_with("== ") {
+                    mapped.insert(x.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("").to_string());   // the map's answer: a line the guard ran through the map
                 }
             }
         }
@@ -98,7 +110,7 @@ fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
         if let Some(content) = m.get("content").and_then(|c| c.as_array()) {
             for x in content {
                 if x.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
-                    c.kinds.push(looks(x.get("name").and_then(|n| n.as_str()).unwrap_or(""), x.get("input").unwrap_or(&Value::Null)));
+                    c.kinds.push((x.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string(), looks(x.get("name").and_then(|n| n.as_str()).unwrap_or(""), x.get("input").unwrap_or(&Value::Null))));
                 }
             }
         }
@@ -106,7 +118,7 @@ fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
     }
     let mut outside = 0;
     for (id, (name, input, cwd)) in &uses {
-        if refused.contains(id) { continue; }
+        if refused.contains(id) || mapped.contains(id) { continue; }
         let mut data = Map::new();
         data.insert("tool_name".into(), Value::String(name.clone()));
         data.insert("tool_input".into(), Value::Object(input.clone()));
@@ -114,7 +126,8 @@ fn calls(path: &PathBuf) -> (Vec<Row>, Vec<usize>, usize) {
         if guard::replacement("claude", &data).is_some() { outside += 1; }
     }
     let rows = out.into_iter().map(|(_, c)| {
-        let kind = if c.kinds.is_empty() || c.kinds.contains(&None) { None } else if c.kinds.contains(&Some("map")) { Some("map") } else { Some("other") };
+        let kinds: Vec<Option<&'static str>> = c.kinds.iter().map(|(i, k)| if mapped.contains(i) && *k == Some("other") { Some("map") } else { *k }).collect();
+        let kind = if kinds.is_empty() || kinds.contains(&None) { None } else if kinds.contains(&Some("map")) { Some("map") } else { Some("other") };
         let secs = match (c.since, c.last) { (Some(a), Some(b)) if b - a > 0.0 && b - a < 600.0 => Some(b - a), _ => None };
         (c.ctx, kind, secs)
     }).collect();
@@ -129,40 +142,82 @@ fn first_stamp(p: &PathBuf) -> String {
         .and_then(|v| v.get("timestamp").and_then(|t| t.as_str()).map(String::from)).unwrap_or_default()
 }
 
+/// The session's cost in USD and whether some model's price was unknown: the largest totalCostUSD of its cost-state records.
+fn cost(path: &PathBuf) -> Option<(f64, bool)> {
+    let mut best: Option<f64> = None;
+    let mut unknown = false;
+    for l in std::fs::read_to_string(path).unwrap_or_default().lines() {
+        if !l.contains("\"cost-state\"") { continue; }
+        let Ok(d) = serde_json::from_str::<Value>(l) else { continue };
+        if d.get("type").and_then(|t| t.as_str()) != Some("cost-state") { continue; }
+        if let Some(v) = d.get("totalCostUSD").and_then(|v| v.as_f64()) {
+            best = Some(best.map_or(v, |b| b.max(v)));
+            unknown = unknown || d.get("hasUnknownModelCost") == Some(&Value::Bool(true));
+        }
+    }
+    best.map(|b| (b, unknown))
+}
+
+type Measure = ([u64; 9], Vec<f64>, Vec<f64>);
+
+/// One transcript: [calls, context, search/read calls, their context, via map, asks, questions, outside, runs], and its response
+/// times under and over 300k tokens.
+fn measure(path: &PathBuf) -> Measure {
+    let (cs, asked, outside) = calls(path);
+    let mut r = [0u64; 9];
+    r[0] = cs.len() as u64;
+    let (mut runs, mut run) = (0u64, 0u64);
+    let (mut lo, mut hi) = (Vec::new(), Vec::new());
+    for (ctx, kind, secs) in &cs {
+        r[1] += ctx;
+        if kind.is_some() { r[2] += 1; r[3] += ctx; if *kind == Some("map") { r[4] += 1; } run += 1; } else { if run >= 8 { runs += 1; } run = 0; }
+        if let Some(s) = secs { if *ctx < 300000 { lo.push(*s); } else { hi.push(*s); } }
+    }
+    if run >= 8 { runs += 1; }
+    r[5] = asked.len() as u64;
+    r[6] = asked.iter().sum::<usize>() as u64;
+    r[7] = outside as u64;
+    r[8] = runs;
+    (r, lo, hi)
+}
+
 fn report(paths: &[PathBuf]) {
-    println!("{:<19}{:>6}{:>8}{:>16}{:>8}{:>8}{:>6}{:>6}{:>8}{:>8}{:>8}{:>8}", "session", "calls", "read M", "search/read", "their M", "via map", "asks", "q/ask", "outside", "runs 8+", "s <300k", "s >300k");
-    let mut total = [0u64; 9];
+    println!("{:<19}{:>6}{:>7}{:>8}{:>8}{:>16}{:>8}{:>8}{:>6}{:>6}{:>8}{:>8}{:>8}{:>8}", "session", "calls", "agents", "$", "read M", "search/read", "their M", "via map", "asks", "q/ask", "outside", "runs 8+", "s <300k", "s >300k");
+    let mut total = [0u64; 10];
     let (mut all_lo, mut all_hi) = (Vec::new(), Vec::new());
-    let line = |name: &str, r: &[u64; 9], lo: &[f64], hi: &[f64]| {
+    let mut spent: Option<(f64, bool)> = None;
+    let line = |name: &str, r: &[u64; 10], lo: &[f64], hi: &[f64], usd: Option<(f64, bool)>| {
+        let money = usd.map_or("-".to_string(), |(v, u)| format!("{:.2}{}", v, if u { "+" } else { "" }));
         let per_ask = if r[5] > 0 { r[6] as f64 / r[5] as f64 } else { 0.0 };
         let share = format!("{:.0}", r[2] as f64 / r[0] as f64 * 100.0);   // a tie to the even digit, as Python's format
-        println!("{:<19}{:>6}{:>8.1}{:>9} ({:>3}%){:>8.1}{:>8}{:>6}{:>6.1}{:>8}{:>8}{:>8}{:>8}", name, r[0], r[1] as f64 / 1e6, r[2], share, r[3] as f64 / 1e6, r[4], r[5], per_ask, r[7], r[8], f1(median(lo)), f1(median(hi)));
+        println!("{:<19}{:>6}{:>7}{:>8}{:>8.1}{:>9} ({:>3}%){:>8.1}{:>8}{:>6}{:>6.1}{:>8}{:>8}{:>8}{:>8}", name, r[0], r[9], money, r[1] as f64 / 1e6, r[2], share, r[3] as f64 / 1e6, r[4], r[5], per_ask, r[7], r[8], f1(median(lo)), f1(median(hi)));
     };
     for p in paths {
-        let (cs, asked, outside) = calls(p);
-        if cs.is_empty() { continue; }
-        let mut r = [0u64; 9];
-        r[0] = cs.len() as u64;
-        let (mut runs, mut run) = (0u64, 0u64);
+        let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default().join(p.file_stem().unwrap_or_default()).join("subagents");   // the subagents' calls are the session's
+        let mut subs: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|f| f.extension().map(|x| x == "jsonl").unwrap_or(false)).collect();
+        subs.sort();
+        let mut r = [0u64; 10];
+        r[9] = subs.len() as u64;
         let (mut lo, mut hi) = (Vec::new(), Vec::new());
-        for (ctx, kind, secs) in &cs {
-            r[1] += ctx;
-            if kind.is_some() { r[2] += 1; r[3] += ctx; if *kind == Some("map") { r[4] += 1; } run += 1; } else { if run >= 8 { runs += 1; } run = 0; }
-            if let Some(s) = secs { if *ctx < 300000 { lo.push(*s); } else { hi.push(*s); } }
+        let mut all = vec![p.clone()];
+        all.extend(subs);
+        for t in &all {
+            let (m, tlo, thi) = measure(t);
+            for k in 0..9 { r[k] += m[k]; }
+            lo.extend(tlo);
+            hi.extend(thi);
         }
-        if run >= 8 { runs += 1; }
-        r[5] = asked.len() as u64;
-        r[6] = asked.iter().sum::<usize>() as u64;
-        r[7] = outside as u64;
-        r[8] = runs;
-        for k in 0..9 { total[k] += r[k]; }
+        if r[0] == 0 { continue; }
+        for k in 0..10 { total[k] += r[k]; }
         all_lo.extend(lo.iter());
         all_hi.extend(hi.iter());
         let day: String = first_stamp(p).chars().take(10).collect();
         let stem: String = p.file_stem().map(|s| s.to_string_lossy().chars().take(8).collect()).unwrap_or_default();
-        line(&format!("{} {}", day, stem), &r, &lo, &hi);
+        let usd = cost(p);
+        if let Some((v, u)) = usd { spent = Some(spent.map_or((v, u), |(a, b)| (a + v, b || u))); }
+        line(&format!("{} {}", day, stem), &r, &lo, &hi, usd);
     }
-    if total[0] > 0 { line("all", &total, &all_lo, &all_hi); }
+    if total[0] > 0 { line("all", &total, &all_lo, &all_hi, spent); }
 }
 
 fn main() {

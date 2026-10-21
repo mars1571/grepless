@@ -56,13 +56,14 @@ function main(argv) {
   const i = argv.indexOf('--agent');
   let agent = i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
   let data; try { data = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { return; }
-  if (!data || typeof data !== 'object' || Array.isArray(data) || data.agent_id) return;   // a subagent's calls are its own business
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return;
   agent = agent || detect(data);
   let [session, tool, given] = normalise(agent, data);
   if (!session) return;
   given = given && typeof given === 'object' && !Array.isArray(given) ? given : {};
   const call = String(given.command || given.file_path || given.path || '');
-  const file = path.join(DIR, String(session).replace(/[^A-Za-z0-9_]/g, '').slice(0, 64) + '.json');
+  const sub = String(data.agent_id || '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 32);   // a subagent counts its own reads
+  const file = path.join(DIR, String(session).replace(/[^A-Za-z0-9_]/g, '').slice(0, 64) + (sub ? `-${sub}` : '') + '.json');
   let state; try { state = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { state = {}; }
   const now = Date.now() / 1000;
   if (call && state.last === call && now - (state.at || 0) >= 0 && now - (state.at || 0) < AGAIN) return;   // the same call, from a second source

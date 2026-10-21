@@ -34,7 +34,8 @@ func countWords(text string, words []string) int {
 	return n
 }
 
-func Find(args []string) {
+// Find prints the blocks and declarations that match the words and returns how many blocks it left out.
+func Find(args []string) int {
 	blocks, _, _ := Everything()
 	var raw []string
 	for _, a := range args {
@@ -66,6 +67,7 @@ func Find(args []string) {
 					if where == "" {
 						where = d.Path
 					}
+					Rec("declarations", Obj("name", w, "what", d.What, "in", where, "file", d.Path, "first", d.First, "last", d.Last))
 					Printf("%s: %s, declared in %s  %s:%d-%d", w, d.What, where, d.Path, d.First, d.Last)
 					said = true
 				}
@@ -129,6 +131,7 @@ func Find(args []string) {
 			}
 			purpose = string(r[:cutAt]) + "…"
 		}
+		Rec("blocks", Obj("id", b.ID, "file", b.Path, "first", b.First, "last", b.Last, "lines", b.Lines, "purpose", b.Purpose))
 		Printf("%s %s:%d-%d (%d lines)  %s", PadR(b.ID, 44), b.Path, b.First, b.Last, b.Lines, purpose)
 	}
 	if len(hits) > SHOWN {
@@ -137,6 +140,10 @@ func Find(args []string) {
 	if len(hits) == 0 && !said {
 		Print("No block matches. Try fewer words, or the code's text: " + CMD + " ask '<text>'")
 	}
+	if len(hits) > SHOWN {
+		return len(hits) - SHOWN
+	}
+	return 0
 }
 
 func bool2int(b bool) int {
@@ -238,7 +245,7 @@ func Gaps(paths []string) {
 	}
 	SaveCache()
 	if untagged > 0 {
-		Printf("%d of %d files carry no tag: docs/TAGGING.md says how to tag them with an agent", untagged, len(chosen))
+		Printf("%d of %d files carry no tag: https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md says how to tag them with an agent", untagged, len(chosen))
 	} else if !printed {
 		Printf("All %d code files are tagged, no block to split, no problem.", len(chosen))
 	}

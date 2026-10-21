@@ -20,6 +20,10 @@ pub fn g() -> &'static Guard { G.get().expect("guard setup") }
 
 const REASON: &str = "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  ";
 
+const REASON_LINE: &str = "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  ";
+
+const NOTE: &str = "map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, \"Finding code\"; next time, ask every question of a round in one call):\n  ";
+
 fn set(words: &str) -> HashSet<&'static str> {
     let leaked: &'static str = Box::leak(words.to_string().into_boxed_str());
     leaked.split_whitespace().collect()
@@ -28,8 +32,9 @@ fn skip_set() -> &'static HashSet<&'static str> {
     static T: OnceLock<HashSet<&'static str>> = OnceLock::new();
     T.get_or_init(|| set("node_modules dist build out target vendor venv .venv __pycache__ .git .hg .svn .tox .mypy_cache .pytest_cache .cache coverage .idea .vscode bower_components .next .nuxt .terraform Pods DerivedData map"))
 }
+fn kept_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("head tail cut grep egrep sort uniq wc tr column")) }
 fn search_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("grep egrep fgrep rg ag ack")) }
-fn read_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("cat sed head tail awk nl less more bat cut strings xxd od perl ruby")) }
+fn read_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("cat sed head tail awk nl less more bat cut sort uniq strings xxd od perl ruby")) }
 fn list_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("ls find tree fd")) }
 fn filter_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("head tail cut grep egrep sort uniq wc sed awk tr column")) }
 fn named_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("Makefile GNUmakefile Dockerfile Containerfile Rakefile Gemfile Justfile Vagrantfile CMakeLists.txt Jenkinsfile")) }
@@ -220,6 +225,7 @@ pub fn quote(words: &[String]) -> String { words.iter().map(|w| quote_word(w)).c
 
 // @map map.guard.commands: a shell line into its commands (heredocs left out, cd followed), and each command's map question
 const PUNCT: &str = "();<>|&";
+const QUIET_REDIRECT: &str = r"&>\s*/dev/null|\d?>&\d|\d?>\s*/dev/null";     // stderr or all output thrown away: no word of the command
 
 pub fn shell_words(line: &str) -> Vec<String> {
     let r: Vec<char> = line.chars().collect();
@@ -316,7 +322,7 @@ pub struct Cmd { pub words: Vec<String>, pub piped: bool, pub base: String }
 
 pub fn commands(line: &str, cwd: &str) -> Vec<Cmd> {
     let line = without_heredocs(line).replace("\\\n", " ").replace('\n', " ; ");
-    let line = rx(r"\d?>&\d|\d?>\s*/dev/null").replace_all(&line, " ").to_string();
+    let line = rx(QUIET_REDIRECT).replace_all(&line, " ").to_string();
     let mut split: Vec<String> = Vec::new();
     for t in shell_words(&line) {
         if rx(r"^[|&;()<>]+$").is_match(&t) {
@@ -354,7 +360,7 @@ fn unique(xs: &[String]) -> Vec<String> {
     xs.iter().filter(|x| seen.insert((*x).clone())).cloned().collect()
 }
 
-pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
+pub fn grep_parts(words: &[String]) -> (Vec<String>, Vec<String>, Vec<String>, HashSet<String>) {
     let (mut pats, mut paths, mut includes) = (Vec::new(), Vec::new(), Vec::new());
     let mut flags: HashSet<String> = HashSet::new();
     let mut i = 1;
@@ -376,6 +382,11 @@ pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
         i += 1;
     }
     if pats.is_empty() && !paths.is_empty() { pats = vec![paths.remove(0)]; }
+    (pats, paths, includes, flags)
+}
+
+pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
+    let (pats, paths, includes, flags) = grep_parts(words);
     if ["c", "q", "l", "L", "--count", "--quiet", "--silent", "--files-with-matches", "--files-without-match"].iter().any(|f| flags.contains(*f)) { return None; }
     let recursive = matches!(words[0].as_str(), "rg" | "ag" | "ack") || ["r", "R", "--recursive"].iter().any(|f| flags.contains(*f));
     if paths.is_empty() && !recursive { return None; }
@@ -419,17 +430,50 @@ fn count_lines(rel: &str) -> usize {
     text.matches('\n').count() + if text.ends_with('\n') { 0 } else { 1 }
 }
 
+/// The flags that take a value of a filter that reads a file given to it (cut, sort, uniq).
+fn file_filter_flags(tool: &str) -> Option<&'static str> { match tool { "cut" => Some("bcdf"), "sort" => Some("ktTS"), "uniq" => Some("fsw"), _ => None } }
+
+/// (the filter's words without its files, the files) of cut, sort or uniq; None when it writes (sort -o, uniq's output).
+pub fn file_filter(words: &[String]) -> Option<(Vec<String>, Vec<String>)> {
+    let tool = words[0].rsplit('/').next().unwrap_or("");
+    let valued = file_filter_flags(tool)?;
+    let (mut keep, mut files, mut skip) = (vec![words[0].clone()], Vec::<String>::new(), false);
+    for a in &words[1..] {
+        if skip {
+            keep.push(a.clone());
+            skip = false;
+        } else if a.starts_with("--") && a.chars().count() > 2 {
+            if a.starts_with("--output") { return None; }
+            keep.push(a.clone());
+        } else if a.starts_with('-') && a.chars().count() > 1 {
+            if tool == "sort" && a[1..].contains('o') { return None; }
+            keep.push(a.clone());
+            skip = a.chars().count() == 2 && valued.contains(a.chars().nth(1).unwrap());
+        } else {
+            files.push(a.clone());
+        }
+    }
+    if tool == "uniq" && files.len() > 1 { None } else { Some((keep, files)) }
+}
+
+/// (script, files) of a read: sed's script (awk's program is passed over), and the files it names.
+pub fn read_files(words: &[String]) -> (String, Vec<String>) {
+    let tool = words[0].as_str();
+    let args = &words[1..];
+    if file_filter_flags(tool).is_some() { return (String::new(), file_filter(words).map(|f| f.1).unwrap_or_default()); }
+    match tool {
+        "sed" => { let rest: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect(); (rest.first().map(|f| (*f).clone()).unwrap_or_default(), rest.iter().skip(1).map(|s| (*s).clone()).collect()) }
+        "awk" => (String::new(), args.iter().filter(|a| !a.starts_with('-')).skip(1).cloned().collect()),
+        _ => (String::new(), args.iter().enumerate().filter(|(k, a)| !a.starts_with('-') && !(*k > 0 && matches!(args[k - 1].as_str(), "-n" | "-c" | "-f" | "-d"))).map(|(_, a)| a.clone()).collect()),
+    }
+}
+
 pub fn read_question(words: &[String], base: &str) -> Option<Vec<String>> {
     let tool = words[0].as_str();
     let args = &words[1..];
     if tool == "sed" && args.iter().any(|a| a.starts_with("-i") || a == "--in-place") { return None; }
     if (tool == "perl" || tool == "ruby") && args.iter().any(|a| rx(r"^-\w*i\S*$").is_match(a)) { return None; }
-    let mut script = String::new();
-    let files: Vec<String> = match tool {
-        "sed" => { let rest: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect(); if let Some(f) = rest.first() { script = (*f).clone(); } rest.iter().skip(1).map(|s| (*s).clone()).collect() }
-        "awk" => args.iter().filter(|a| !a.starts_with('-')).skip(1).cloned().collect(),
-        _ => args.iter().enumerate().filter(|(k, a)| !a.starts_with('-') && !(*k > 0 && matches!(args[k - 1].as_str(), "-n" | "-c" | "-f" | "-d"))).map(|(_, a)| a.clone()).collect(),
-    };
+    let (script, files) = read_files(words);
     let (mut n, mut from_start, mut no_n) = (10usize, false, false);
     for (k, a) in args.iter().enumerate() {
         if a.starts_with("-c") { no_n = true; continue; }
@@ -585,7 +629,359 @@ pub fn script_question(line: &str, cwd: &str) -> Vec<String> {
 }
 // @end map.guard.commands.scripts
 
+// @map map.guard.commands.rewrite: a line that edits a file, whose reads check the edit; a line of reads only, run through the map in its place
+fn simple_sed(s: &str) -> bool { rx(r"^(?:(?:\d+|\$)(?:,(?:\d+|\$))?p|\d+q)$").is_match(s) }       // sed -n 5,20p: a range of lines, nothing that runs or writes
+fn simple_awk(s: &str) -> bool { rx(r"^NR\s*(?:>=|<=|==|<|>)\s*\d+(?:\s*&&\s*NR\s*(?:>=|<=|==|<|>)\s*\d+)?$").is_match(s) }   // awk 'NR>=5 && NR<=20'
+fn syntax_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("for in case select done fi esac do then else elif if while until { } ! function")) }
+fn git_read_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("status log diff show rev-parse branch")) }
+fn git_branch_flags() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("--list --all --remotes --verbose --show-current --no-color --color --ignore-case --merged --no-merged --contains --no-contains --points-at --sort --format --abbrev --column --no-column")) }
+fn git_branch_values() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("--merged --no-merged --contains --no-contains --points-at --sort --format --abbrev")) }
+
+fn bn(word: &str) -> &str { word.rsplit('/').next().unwrap_or("") }
+
+/// Whether the line changes a file of the repository: sed -i, perl -i, a redirection or tee into it, patch, git apply, a script that writes.
+pub fn line_writes(line: &str, cwd: &str) -> bool {
+    for c in commands(line, cwd) {
+        let words = &c.words;
+        let tool = words[0].rsplit('/').next().unwrap_or("");
+        let mut targets: Vec<&String> = Vec::new();
+        for k in 0..words.len().saturating_sub(1) { if matches!(words[k].as_str(), ">" | ">>" | "&>") { targets.push(&words[k + 1]); } }
+        if tool == "tee" { targets.extend(words[1..].iter()); }
+        if targets.iter().any(|t| !t.contains('$') && !t.starts_with('-') && inside(t, &c.base).is_some()) { return true; }
+        if tool == "patch" || (tool == "git" && words.get(1).map(|x| x == "apply").unwrap_or(false)) { return true; }
+        if tool == "sed" && words[1..].iter().any(|a| a.starts_with("-i") || a == "--in-place") { return true; }
+        if (tool == "perl" || tool == "ruby") && words[1..].iter().any(|a| rx(r"^-\w*i\S*$").is_match(a)) { return true; }
+    }
+    scripts(line, cwd).iter().any(|t| writes(t))
+}
+
+/// Whether a command runs the map itself (the command of map.json, any of its commands).
+fn is_map(words: &[String]) -> bool {
+    let ask: Vec<&str> = g().ask.split_whitespace().collect();
+    let head = &ask[..ask.len().saturating_sub(1)];
+    words.len() >= head.len() && words[..head.len()].iter().map(|s| s.as_str()).eq(head.iter().copied())
+}
+
+/// Whether the map answers all a read names: no file or folder of it would be left out of its ask.
+fn whole(words: &[String], base: &str) -> bool {
+    let mut tool = words[0].rsplit('/').next().unwrap_or("").to_string();
+    let mut words: Vec<String> = words.to_vec();
+    if tool == "git" && words.get(1).map(|x| x == "grep").unwrap_or(false) { tool = "grep".into(); words = words[1..].to_vec(); }
+    let mut w = vec![tool.clone()]; w.extend(words[1..].iter().cloned());
+    if search_set().contains(tool.as_str()) { return grep_parts(&w).1.iter().all(|p| mapped(inside(p, base).as_deref(), true)); }
+    if read_set().contains(tool.as_str()) { return read_files(&w).1.iter().all(|f| mapped(inside(f, base).as_deref(), false)); }
+    if tool == "ls" || tool == "tree" { return words[1..].iter().filter(|a| !a.starts_with('-')).all(|a| mapped(inside(a, base).as_deref(), true)); }
+    tool == "find"
+}
+
+/// [(separator before, text)]: the line cut at each ; && || | |& & newline ( ) outside quotes, every text exactly as written; None when
+/// it holds a heredoc, a $( ) or backticks that run (the line cannot be rebuilt).
+fn split_line(line: &str) -> Option<Vec<(String, String)>> {
+    if !heredocs(line).is_empty() { return None; }
+    let r: Vec<char> = line.chars().collect();
+    let n = r.len();
+    let starts = |i: usize, p: &str| r[i..].iter().take(p.chars().count()).collect::<String>() == p;
+    let (mut out, mut buf, mut sep, mut quote_, mut i) = (Vec::<(String, String)>::new(), String::new(), String::new(), None::<char>, 0usize);
+    while i < n {
+        let c = r[i];
+        let nxt = r.get(i + 1).copied();
+        if quote_ == Some('\'') {
+            if c == '\'' { quote_ = None; }
+        } else if c == '\\' && nxt.is_some() {
+            buf.push(c);
+            buf.push(nxt.unwrap());
+            i += 2;
+            continue;
+        } else if c == '`' || starts(i, "$(") {
+            return None;
+        } else if quote_ == Some('"') {
+            if c == '"' { quote_ = None; }
+        } else if c == '\'' || c == '"' {
+            quote_ = Some(c);
+        } else if c == '#' && buf.chars().last().map(|l| l.is_whitespace()).unwrap_or(true) {
+            let j = r[i..].iter().position(|x| *x == '\n').map(|p| p + i).unwrap_or(n);
+            buf.extend(r[i..j].iter());
+            i = j;
+            continue;
+        } else {
+            let op: Option<&str> = if c == '\n' { Some("\n") } else if starts(i, ";;") { Some(";;") } else if c == ';' { Some(";") }
+                else if starts(i, "||") { Some("||") } else if starts(i, "|&") { Some("|&") } else if c == '|' { Some("|") }
+                else if c == '(' { Some("(") } else if c == ')' { Some(")") }
+                else if c != '&' || buf.chars().last().map(|l| l == '<' || l == '>').unwrap_or(false) || nxt == Some('>') { None }
+                else if nxt == Some('&') { Some("&&") } else { Some("&") };
+            if let Some(op) = op {
+                out.push((std::mem::take(&mut sep), std::mem::take(&mut buf)));
+                sep = op.to_string();
+                i += op.chars().count();
+                continue;
+            }
+        }
+        buf.push(c);
+        i += 1;
+    }
+    out.push((sep, buf));
+    Some(out)
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StepKind { Syntax, Cd, Cmd }
+
+/// One piece of a line: its separator, the text around its core (kept as written), its words (redirections to /dev/null left out), its
+/// kind (syntax, cd or cmd), whether a pipe feeds it and the folder it runs in.
+#[derive(Clone)]
+struct Step { sep: String, lead: String, prefix: String, core: String, trail: String, words: Vec<String>, kind: StepKind, piped: bool, base: String, redirected: bool }
+
+impl Step {
+    fn plain(&self) -> String { format!("{}{}{}{}", self.lead, self.prefix, self.core, self.trail) }
+}
+
+fn normpath(p: &str) -> String {
+    let abs = p.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => { if parts.last().map(|l| *l != "..").unwrap_or(false) { parts.pop(); } else if !abs { parts.push(".."); } }
+            _ => parts.push(c),
+        }
+    }
+    let joined = parts.join("/");
+    if abs { format!("/{}", joined) } else if joined.is_empty() { ".".into() } else { joined }
+}
+
+/// The line as a list of steps; None when the line cannot be rebuilt or a folder is unknown.
+fn steps(line: &str, cwd: &str) -> Option<Vec<Step>> {
+    let segs = split_line(line)?;
+    let (mut out, mut base, mut stack) = (Vec::<Step>::new(), Some(cwd.to_string()), Vec::<Option<String>>::new());
+    for (k, (sep, text)) in segs.iter().enumerate() {
+        if sep == "(" { stack.push(base.clone()); }
+        else if sep == ")" && !stack.is_empty() { base = stack.pop().unwrap(); }
+        let cur = base.clone()?;
+        let m = rx(r"(?s)^(\s*)((?:(?:do|then|else|elif|if|while|until|!|\{|time)\s+)*)(.*?)(\s*)$").captures(text).unwrap();
+        let (lead, prefix, core, trail) = (m[1].to_string(), m[2].to_string(), m[3].to_string(), m[4].to_string());
+        let words = shell_words(&rx(QUIET_REDIRECT).replace_all(&core, " "));
+        let has_name = words.iter().any(|w| !rx(r"^[A-Za-z_]\w*=.*$").is_match(w));
+        let piped = k > 0 && (sep == "|" || sep == "|&");
+        let kind = if !has_name || syntax_set().contains(words[0].as_str()) { StepKind::Syntax } else if words[0] == "cd" && !piped { StepKind::Cd } else { StepKind::Cmd };
+        let redirected = words.iter().any(|w| rx(r"^[<>&]+$").is_match(w));
+        out.push(Step { sep: sep.clone(), lead, prefix, core, trail, words: words.clone(), kind, piped, base: cur.clone(), redirected });
+        if kind == StepKind::Cd {
+            let target = if words.len() == 2 { Some(words[1].as_str()) } else { None };
+            base = match target {
+                Some(t) if !t.contains('$') && t != "-" => Some(normpath(&Path::new(&cur).join(expanduser(t)).to_string_lossy())),
+                _ => None,
+            };
+        }
+        if base.is_none() && k + 1 < segs.len() { return None; }
+    }
+    Some(out)
+}
+
+/// The text run in the folder it was written for: as it is at the root, else in a (cd root && …) of its own.
+fn anchored(base: &str, text: &str) -> String {
+    if realpath(Path::new(base)) == realpath(&g().root) { text.to_string() } else { format!("(cd {} && {})", quote_word(&g().root.to_string_lossy()), text) }
+}
+
+// @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
+/// Whether a git command only reads this repository: status, log, diff, show, rev-parse, branch (listing).
+fn git_read_only(words: &[String], base: &str) -> bool {
+    let args = &words[1..];
+    let (mut base, mut i) = (base.to_string(), 0usize);
+    while i < args.len() && args[i].starts_with('-') {
+        if args[i] == "-C" && i + 1 < args.len() {
+            base = Path::new(&base).join(expanduser(&args[i + 1])).to_string_lossy().to_string();
+            i += 2;
+        } else if args[i] == "--no-pager" || args[i] == "--no-optional-locks" { i += 1; }
+        else { return false; }
+    }
+    if inside(".", &base).is_none() || i >= args.len() || !git_read_set().contains(args[i].as_str()) { return false; }
+    let (sub, rest) = (args[i].as_str(), &args[i + 1..]);
+    if sub == "branch" {
+        let listing = rest.iter().any(|a| a == "-l" || a == "--list" || rx(r"^-[a-z]*l[a-z]*$").is_match(a));
+        for (k, a) in rest.iter().enumerate() {
+            if a.starts_with("--") {
+                if !git_branch_flags().contains(a.split('=').next().unwrap_or("")) { return false; }
+            } else if a.starts_with('-') {
+                if !rx(r"^-[arvli]+$").is_match(a) { return false; }
+            } else if !(listing || (k > 0 && git_branch_values().contains(rest[k - 1].as_str()))) {
+                return false;                                  // a name with no listing flag makes a branch
+            }
+        }
+        return true;
+    }
+    !rest.iter().any(|a| matches!(a.as_str(), "-O" | "--open-files-in-pager" | "--no-index" | "--ext-diff" | "--output") || a.starts_with("-O") || a.starts_with("--output="))
+}
+
+fn date_read_only(args: &[String]) -> bool {
+    args.iter().all(|a| a.starts_with('+') || matches!(a.as_str(), "-u" | "--utc" | "--universal" | "-R" | "--rfc-email") || rx(r"^(?:-I\w*|--iso-8601(?:=\w+)?)$").is_match(a))
+}
+
+fn inside_all(operands: &[String], base: &str) -> bool { operands.iter().all(|a| inside(a, base).is_some()) }
+
+/// Whether a read of the repository stays safe as it was written: a search that only counts, cat, head, tail, ls …, sed with a range, awk
+/// with NR conditions; every file in the repository and nothing that runs a command or writes.
+fn safe_head(words: &[String], base: &str) -> bool {
+    let (tool, args) = (bn(&words[0]), &words[1..]);
+    let operands: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+    if search_set().contains(tool) {
+        let (_, paths, _, _) = grep_parts(words);
+        let paths = if paths.is_empty() { vec![".".to_string()] } else { paths };
+        return !args.iter().any(|a| matches!(a.split('=').next().unwrap_or(""), "--pre" | "--hostname-bin")) && inside_all(&paths, base);
+    }
+    if matches!(tool, "cat" | "head" | "tail" | "nl" | "ls" | "tree") { return inside_all(&operands, base); }
+    if file_filter_flags(tool).is_some() { return file_filter(words).is_some() && inside_all(&operands, base); }
+    if tool == "find" {
+        let first: Vec<String> = if operands.is_empty() { vec![".".to_string()] } else { vec![operands[0].clone()] };
+        return !args.iter().any(|a| matches!(a.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete") || a.starts_with("-fprint") || a.starts_with("-fls")) && inside_all(&first, base);
+    }
+    if tool == "sed" {
+        return args.iter().filter(|a| a.starts_with('-')).all(|a| matches!(a.as_str(), "-n" | "-E" | "-r")) && !operands.is_empty() && simple_sed(&operands[0]) && inside_all(&operands[1..], base);
+    }
+    if tool == "awk" {
+        return !args.iter().any(|a| a.starts_with('-')) && !operands.is_empty() && simple_awk(&operands[0]) && inside_all(&operands[1..], base);
+    }
+    false
+}
+
+/// Whether a step that is no read of the map's may stay in a line Claude Code runs without asking: it only reads and touches nothing
+/// outside the repository.
+fn safe_step(words: &[String], base: &str) -> bool {
+    let (tool, args) = (bn(&words[0]), &words[1..]);
+    if is_map(words) || matches!(tool, "echo" | "printf" | "true" | ":" | "pwd") { return true; }
+    if tool == "wc" {
+        let operands: Vec<String> = args.iter().filter(|a| !a.starts_with('-')).cloned().collect();
+        return inside_all(&operands, base);
+    }
+    if tool == "date" { return date_read_only(args); }
+    if tool == "which" { return args.iter().all(|a| !a.starts_with('-') || a == "-a" || a == "-s"); }
+    if words[0] == "command" { return words.len() > 2 && (words[1] == "-v" || words[1] == "-V"); }
+    if words.len() == 2 && args[0] == "--version" && !words[0].contains('/') { return true; }
+    if tool == "git" { return git_read_only(words, base); }
+    search_set().contains(tool) && safe_head(words, base)                                   // grep -c file, grep -q …: a count or a yes
+}
+
+/// Whether a filter in a pipe is kept: head, tail, cut, grep, sort, uniq, wc, tr, column, or sed -n with a range.
+fn filter_ok(words: &[String]) -> bool {
+    if kept_set().contains(bn(&words[0])) { return true; }
+    let operands: Vec<&String> = words[1..].iter().filter(|a| !a.starts_with('-')).collect();
+    bn(&words[0]) == "sed" && words[1..].iter().filter(|a| a.starts_with('-')).all(|a| a == "-n") && operands.len() == 1 && simple_sed(operands[0])
+}
+// @end map.guard.commands.rewrite.readonly
+
+/// What a pipeline's first command is, for the line to be rebuilt.
+enum ChainKind {
+    /// a read the map answers: its ask, and the steps of the pipeline it replaces
+    Read(String, usize),
+    /// a read that only counts
+    Count,
+    /// anything else
+    Step,
+    /// a loop's keywords, an assignment or a cd
+    Syntax,
+}
+
+fn chain_read(chain: &[Step]) -> ChainKind {
+    let first = &chain[0];
+    let (words, base) = (&first.words, first.base.as_str());
+    if first.kind != StepKind::Cmd { return ChainKind::Syntax; }
+    if first.redirected { return ChainKind::Step; }
+    if bn(&words[0]) == "find" && chain.len() > 1 && chain[1].words.first().map(|x| x == "xargs").unwrap_or(false) && chain[1].words.len() > 1 && search_set().contains(bn(&chain[1].words[1])) {
+        let pattern = words.iter().enumerate().find(|(j, a)| (*a == "-name" || *a == "-iname") && j + 1 < words.len()).map(|(j, _)| words[j + 1].clone()).unwrap_or_else(|| "*".into());
+        let root = words[1..].iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| ".".into());
+        let mut w: Vec<String> = chain[1].words[1..].to_vec();
+        w.extend(["-r".to_string(), root, format!("--include={}", pattern)]);
+        return match grep_question(&w, base).filter(|q| !q.is_empty()) { Some(q) => ChainKind::Read(format!("{}{}", g().ask, quote(&q)), 2), None => ChainKind::Step };
+    }
+    let Some(q) = question(words, base).filter(|q| !q.is_empty()) else { return ChainKind::Step };
+    let mut run: Vec<&Vec<String>> = Vec::new();
+    for s in &chain[1..] {
+        if s.words.is_empty() || !filter_set().contains(bn(&s.words[0])) { break; }
+        run.push(&s.words);
+    }
+    if counts(&run) { return ChainKind::Count; }
+    let own = if file_filter_flags(bn(&words[0])).is_some() { file_filter(words).map(|f| f.0) } else { None };
+    ChainKind::Read(format!("{}{}{}", g().ask, quote(&q), own.map(|o| format!(" | {}", quote(&o))).unwrap_or_default()), 1)
+}
+
+/// A step of the rebuilt line: as written, with its own text, or dropped (a cd whose separator passes on, a filter the ask took in).
+struct Piece { step: Step, drop: Option<&'static str>, text: Option<String> }
+
+/// (text, replaced, ok, pure) of the line with each read of the code or the docs as its ask, every other step as it was written: in place
+/// (Claude Code: from the root, cd steps dropped, steps outside the root in a (cd …) of their own) or to send again (each ask in a
+/// (cd root && …) when the line is not at the root). ok: every step only reads; pure: reads and their filters only. None when the line
+/// cannot be rebuilt.
+fn rebuild(line: &str, cwd: &str, in_place: bool) -> Option<(String, bool, bool, bool)> {
+    let st = steps(line, cwd)?;
+    if !script_question(line, cwd).is_empty() { return None; }
+    let (mut out, mut replaced, mut ok, mut pure, mut k) = (Vec::<Piece>::new(), false, true, true, 0usize);
+    while k < st.len() {
+        let mut j = k + 1;
+        while j < st.len() && st[j].piped { j += 1; }
+        let chain = &st[k..j];
+        let first = &chain[0];
+        let kind = chain_read(chain);
+        let used = if let ChainKind::Read(_, u) = &kind { *u } else { 1 };
+        for s in &chain[used..] {
+            ok = ok && !s.words.is_empty() && filter_ok(&s.words) && !s.redirected;
+            pure = pure && !s.words.is_empty() && filter_set().contains(bn(&s.words[0]));
+        }
+        match &kind {
+            ChainKind::Syntax => {
+                if first.kind == StepKind::Cd && in_place { out.push(Piece { step: first.clone(), drop: Some("transfer"), text: None }); }
+                else { out.push(Piece { step: first.clone(), drop: None, text: None }); }
+            }
+            ChainKind::Read(ask, _) => {
+                replaced = true;
+                ok = ok && used == 1 && whole(&first.words, &first.base);          // xargs could run anything
+                let body = if in_place { ask.clone() } else { anchored(&first.base, ask) };
+                out.push(Piece { step: first.clone(), drop: None, text: Some(format!("{}{}{}{}", first.lead, first.prefix, body, first.trail)) });
+                if used == 2 { out.push(Piece { step: chain[1].clone(), drop: Some("own"), text: None }); }
+            }
+            _ => {
+                pure = false;
+                let words = &first.words;
+                let counted = matches!(kind, ChainKind::Count);
+                ok = ok && !first.redirected && if counted { safe_head(words, &first.base) && whole(words, &first.base) } else { safe_step(words, &first.base) };
+                let mut text = first.plain();
+                if in_place && realpath(Path::new(&first.base)) != realpath(&g().root) {
+                    text = format!("{}{}(cd {} && {}){}", first.lead, first.prefix, quote_word(&first.base), first.core.trim(), first.trail);
+                }
+                out.push(Piece { step: first.clone(), drop: None, text: Some(text) });
+            }
+        }
+        for s in &chain[used..] { out.push(Piece { step: s.clone(), drop: None, text: None }); }
+        k = j;
+    }
+    let (mut text, mut carry) = (String::new(), None::<String>);
+    for p in &out {
+        let sep = carry.clone().unwrap_or_else(|| p.step.sep.clone());
+        if p.drop == Some("transfer") { carry = Some(p.step.sep.clone()); continue; }
+        carry = None;
+        if p.drop == Some("own") { continue; }
+        text.push_str(&sep);
+        text.push_str(&p.text.clone().unwrap_or_else(|| p.step.plain()));
+    }
+    Some((text, replaced, ok, pure))
+}
+
+/// The line run through the map in its place, from the root: each read of the code or the docs as its ask, every other step as written, in
+/// order; None when a step does more than read, or a filter could run a command.
+pub fn rewrite(line: &str, cwd: &str) -> Option<String> {
+    let (text, replaced, ok, _) = rebuild(line, cwd, true)?;
+    if !replaced || !ok { return None; }
+    Some(format!("(cd {} && {})", quote_word(&g().root.to_string_lossy()), text.trim()))
+}
+
+/// The whole line to send again when it is refused and mixed (reads beside other steps): each read as its ask, every other step exactly as
+/// written, the same separators; None when it is reads only (the refusal names their asks) or cannot be rebuilt.
+pub fn resend(line: &str, cwd: &str) -> Option<String> {
+    let (text, replaced, _, pure) = rebuild(line, cwd, false)?;
+    if replaced && !pure { Some(text) } else { None }
+}
+// @end map.guard.commands.rewrite
+
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
+// @map map.guard.decide.question: the map question of a command and of a whole shell line, with the filters and counts that go with it
 fn question(words: &[String], base: &str) -> Option<Vec<String>> {
     let tool = words[0].rsplit('/').next().unwrap_or("").to_string();
     if tool == "git" && words.get(1).map(|s| s == "grep").unwrap_or(false) {
@@ -603,9 +999,18 @@ fn question(words: &[String], base: &str) -> Option<Vec<String>> {
     None
 }
 
+/// Whether a run of filters counts what it is fed: wc, or grep -c.
+fn counts(pipe: &[&Vec<String>]) -> bool {
+    pipe.iter().any(|w| {
+        let t = w[0].rsplit('/').next().unwrap_or("");
+        t == "wc" || (matches!(t, "grep" | "egrep" | "fgrep") && { let f = grep_parts(w).3; f.contains("c") || f.contains("--count") })
+    })
+}
+
 pub fn shell_question(line: &str, cwd: &str) -> Option<String> {
     let first = line.split('\n').next().unwrap_or("");
     if line.contains("map.py") || line.contains("map.mjs") || (g().ask.starts_with("map ") && format!(" {} ", first).contains(" map ")) { return None; }
+    if line_writes(line, cwd) { return None; }
     let mut asked = script_question(line, cwd);
     let mut filtered = Vec::new();
     let parts = commands(line, cwd);
@@ -621,18 +1026,26 @@ pub fn shell_question(line: &str, cwd: &str) -> Option<String> {
         } else { question(&c.words, &c.base) };
         let Some(q) = q else { continue };
         if q.is_empty() { continue; }
-        let mut pipe = Vec::new();
+        let mut pipe: Vec<&Vec<String>> = Vec::new();
         for w in &parts[k + 1..] {
             if !w.piped || !filter_set().contains(w.words[0].rsplit('/').next().unwrap_or("")) { break; }
-            pipe.push(quote(&w.words));
+            pipe.push(&w.words);
         }
-        if pipe.is_empty() { asked.extend(q); } else { filtered.push(format!("{}{} | {}", g().ask, quote(&q), pipe.join(" | "))); }
+        if counts(&pipe) { continue; }                                        // a count: nothing of the files is read
+        let own = if file_filter_flags(c.words[0].rsplit('/').next().unwrap_or("")).is_some() { file_filter(&c.words).map(|f| f.0) } else { None };      // cut -c1-9 file: the ask, then cut
+        if own.is_some() || !pipe.is_empty() {
+            let mut run: Vec<String> = own.iter().map(|o| quote(o)).collect();
+            run.extend(pipe.iter().map(|w| quote(w)));
+            filtered.push(format!("{}{} | {}", g().ask, quote(&q), run.join(" | ")));
+        } else { asked.extend(q); }
     }
     let mut all = Vec::new();
     if !asked.is_empty() { all.push(format!("{}{}", g().ask, quote(&asked))); }
     all.extend(filtered);
     if all.is_empty() { None } else { Some(all.join("; ")) }
 }
+
+// @end map.guard.decide.question
 
 fn truthy(v: Option<&Value>) -> bool {
     match v { None | Some(Value::Null) => false, Some(Value::Bool(b)) => *b, Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0) != 0.0, Some(Value::String(s)) => !s.is_empty(), Some(_) => true }
@@ -739,10 +1152,32 @@ pub fn detect(data: &Map<String, Value>) -> &'static str {
     "claude"
 }
 
-pub fn answer(agent: &str, asked: &str) -> Value {
-    let reason = format!("{}{}", REASON, asked);
+/// The hook's answer for this call, or None when it goes ahead: in Claude Code a shell line of reads only runs through the map in its
+/// place; any other read of the code or the docs is refused with its ask.
+pub fn decide(agent: &str, data: &Map<String, Value>) -> Option<Value> {
+    let asked = replacement(agent, data)?;
+    let (kind, given, cwd) = normalise(agent, data);
+    let command = s(&given, "command");
+    let line = if agent == "claude" && kind == "shell" { rewrite(&command, &cwd) } else { None };
+    if let Some(line) = line {
+        let mut updated = given.clone();
+        updated.insert("command".into(), json!(line));
+        return Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+            "permissionDecisionReason": "map-guard: read through the map", "updatedInput": updated, "additionalContext": format!("{}{}", NOTE, line)}}));
+    }
+    let again = if kind == "shell" { resend(&command, &cwd) } else { None };
+    Some(refusal(agent, &asked, again.as_deref()))
+}
+
+/// The refusal with the asks of the call (what MARS and the other callers use).
+pub fn answer(agent: &str, asked: &str) -> Value { refusal(agent, asked, None) }
+
+/// The refusal: the asks, or, for a line of reads beside other steps, the whole line to send again.
+fn refusal(agent: &str, asked: &str, again: Option<&str>) -> Value {
+    let again = again.filter(|a| !a.is_empty());
+    let reason = match again { Some(a) => format!("{}{}", REASON_LINE, a), None => format!("{}{}", REASON, asked) };
     match agent {
-        "cursor" => json!({"permission": "deny", "user_message": format!("map-guard: read it through the map (ask). {}", asked), "agent_message": reason}),
+        "cursor" => json!({"permission": "deny", "user_message": format!("map-guard: read it through the map (ask). {}", again.unwrap_or(asked)), "agent_message": reason}),
         "copilot" => json!({"permissionDecision": "deny", "permissionDecisionReason": reason}),
         "gemini" => json!({"decision": "deny", "reason": reason}),
         _ => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}),
@@ -790,7 +1225,12 @@ pub fn main(argv: Vec<String>) {
     if argv.len() == 2 && argv[0] == "install" { install(&argv[1]); return; }
     if argv.len() == 2 && argv[0] == "try" {
         let cwd = std::env::current_dir().unwrap_or_default().to_string_lossy().to_string();
-        println!("{}", shell_question(&argv[1], &cwd).unwrap_or_else(|| "goes ahead".into()));
+        let asked = shell_question(&argv[1], &cwd);
+        println!("{}", asked.clone().unwrap_or_else(|| "goes ahead".into()));
+        if asked.is_some() {
+            if let Some(line) = rewrite(&argv[1], &cwd) { println!("Claude Code runs in its place: {}", line); }
+            else if let Some(line) = resend(&argv[1], &cwd) { println!("Send instead: {}", line); }
+        }
         return;
     }
     let mut agent = argv.iter().position(|a| a == "--agent").and_then(|i| argv.get(i + 1)).cloned().unwrap_or_default();
@@ -798,8 +1238,8 @@ pub fn main(argv: Vec<String>) {
     if std::io::stdin().read_to_string(&mut input).is_err() { return; }
     let Ok(Value::Object(data)) = serde_json::from_str::<Value>(&input) else { return };
     if agent.is_empty() { agent = detect(&data).to_string(); }
-    if let Some(asked) = replacement(&agent, &data) {
-        println!("{}", serde_json::to_string(&answer(&agent, &asked)).unwrap());
+    if let Some(out) = decide(&agent, &data) {
+        println!("{}", serde_json::to_string(&out).unwrap());
     }
 }
 // @end map.guard.decide

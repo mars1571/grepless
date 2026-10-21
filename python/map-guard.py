@@ -5,15 +5,19 @@
 A call that would search or read the repository's code or docs with grep, rg, sed, cat, head, tail, awk, ls,
 find, with a script that only prints them, or with the agent's own file-reading tool on a whole file, is
 refused, and the refusal names the `ask` that answers the same question (the agent's own filters kept:
-| head, | cut). Everything else goes ahead: counting (grep -c, wc), editing (sed -i), writing, pipes, tests,
-builds, the map itself, files git ignores, files outside the repository, a range of lines before an edit.
+| head, | cut). In Claude Code a shell line made only of such reads (with the map, echo and filters that run no
+command) is not refused: it runs through the map in its place, each read as its ask, and the agent is told so.
+Everything else goes ahead: counting (grep -c, | wc), editing (sed -i, a redirection, a script that writes) and the
+reads that check that edit in the same line, writing, pipes, tests, builds, the map itself, files git ignores, files
+outside the repository, a range of lines before an edit.
 
     python3 tools/map-guard.py [--agent claude|codex|cursor|copilot|gemini]   the hook: stdin in, the decision out
     python3 tools/map-guard.py install <agent>      write the agent's hook settings for this repository
     python3 tools/map-guard.py try '<shell line>'   what the guard would answer for that line (nothing: it goes ahead)
 
 Agents and their formats, as their docs give them (agents/README.md has the sources):
-  claude   Claude Code: PreToolUse, stdin {tool_name, tool_input, cwd}; {"hookSpecificOutput": {"permissionDecision": "deny"}}
+  claude   Claude Code: PreToolUse, stdin {tool_name, tool_input, cwd}; {"hookSpecificOutput": {"permissionDecision": "deny"}},
+           or "allow" with "updatedInput" (the line run in its place) and "additionalContext"
   codex    Codex: PreToolUse with the same fields and answer (.codex/hooks.json)
   cursor   Cursor: beforeShellExecution {command, cwd} and beforeReadFile {file_path}; {"permission": "deny", "agent_message"}
   copilot  GitHub Copilot: preToolUse {toolName, toolArgs} or {tool_name, tool_input}; {"permissionDecision": "deny"}
@@ -66,12 +70,20 @@ SKIP = {'node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'venv', '.ve
         '.tox', '.mypy_cache', '.pytest_cache', '.cache', 'coverage', '.idea', '.vscode', 'bower_components', '.next',
         '.nuxt', '.terraform', 'Pods', 'DerivedData', 'map'}
 SEARCH = {'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack'}
-READ = {'cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more', 'bat', 'cut', 'strings', 'xxd', 'od', 'perl', 'ruby'}
+READ = {'cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more', 'bat', 'cut', 'sort', 'uniq', 'strings', 'xxd', 'od', 'perl', 'ruby'}
+FILE_FILTERS = {'cut': 'bcdf', 'sort': 'ktTS', 'uniq': 'fsw'}                            # filters that read a file given to them: the flags that take a value
 LIST = {'ls', 'find', 'tree', 'fd'}
 FILTERS = {'head', 'tail', 'cut', 'grep', 'egrep', 'sort', 'uniq', 'wc', 'sed', 'awk', 'tr', 'column'}
+KEPT = {'head', 'tail', 'cut', 'grep', 'egrep', 'sort', 'uniq', 'wc', 'tr', 'column'}    # filters a line run in its place keeps: none runs a command or writes
+QUIET = {'echo', 'printf', 'true', ':', 'wc'}                                            # steps a line run in its place keeps as they are
 REASON = ("This repository's code and docs are read and located through its map, every question of a round in one call "
           '(AGENTS.md, "Finding code"); it answers what this would, by block, with the code. None of this command ran: '
           'send its other steps again. Run instead:\n  ')
+REASON_LINE = ("This repository's code and docs are read and located through its map, every question of a round in one call "
+               '(AGENTS.md, "Finding code"); it answers what this would, by block, with the code. None of this command ran: '
+               'send this line instead, its reads already through the map. Run instead:\n  ')
+NOTE = ('map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, "Finding code"; '
+        'next time, ask every question of a round in one call):\n  ')
 
 
 def inside(path, base):
@@ -172,6 +184,7 @@ def quote(words):
 
 # @map map.guard.commands: a shell line into its commands (heredocs left out, cd followed), and each command's map question
 PUNCT = '();<>|&'
+QUIET_REDIRECT = r'&>\s*/dev/null|\d?>&\d|\d?>\s*/dev/null'     # stderr or all output thrown away: no word of the command
 
 
 def shell_words(line):
@@ -261,7 +274,7 @@ def commands(line, cwd):
     """[(words, piped, base)]: each simple command, whether a pipe feeds it, and the folder it runs in."""
     line = without_heredocs(line)
     line = line.replace('\\\n', ' ').replace('\n', ' ; ')
-    line = re.sub(r'\d?>&\d|\d?>\s*/dev/null', ' ', line)
+    line = re.sub(QUIET_REDIRECT, ' ', line)
     tokens = shell_words(line)
     split = []
     for t in tokens:
@@ -280,8 +293,8 @@ def commands(line, cwd):
     return out
 
 
-def grep_question(words, base):
-    """The ask for a grep-like search over the code or the docs, or None when it searches elsewhere."""
+def grep_parts(words):
+    """(patterns, paths, includes, flags) of a grep-like search."""
     pats, paths, includes, flags, i = [], [], [], set(), 1
     while i < len(words):
         a = words[i]
@@ -305,6 +318,12 @@ def grep_question(words, base):
         i += 1
     if not pats and paths:
         pats, paths = [paths[0]], paths[1:]
+    return pats, paths, includes, flags
+
+
+def grep_question(words, base):
+    """The ask for a grep-like search over the code or the docs, or None when it searches elsewhere."""
+    pats, paths, includes, flags = grep_parts(words)
     if flags & {'c', 'q', 'l', 'L', '--count', '--quiet', '--silent', '--files-with-matches', '--files-without-match'}:
         return None                                              # a count, a yes or file names: nothing of the files is read
     recursive = words[0] in ('rg', 'ag', 'ack') or flags & {'r', 'R', '--recursive'}
@@ -341,6 +360,39 @@ def grep_question(words, base):
     return [rx] + (['--in', ','.join(places)] if places else [])
 
 
+def file_filter(words):
+    """(the filter's words without its files, the files) of cut, sort or uniq; None when it writes (sort -o, uniq's output)."""
+    tool, keep, files, skip = os.path.basename(words[0]), [words[0]], [], False
+    for a in words[1:]:
+        if skip:
+            keep.append(a)
+            skip = False
+        elif a.startswith('--') and len(a) > 2:
+            if a.startswith('--output'):
+                return None
+            keep.append(a)
+        elif a.startswith('-') and len(a) > 1:
+            if tool == 'sort' and 'o' in a[1:]:
+                return None
+            keep.append(a)
+            skip = len(a) == 2 and a[1] in FILE_FILTERS[tool]
+        else:
+            files.append(a)
+    return None if tool == 'uniq' and len(files) > 1 else (keep, files)
+
+
+def read_files(words):
+    """(script, files) of a read: sed's script (awk's program is passed over), and the files it names."""
+    tool, args = words[0], words[1:]
+    if tool in FILE_FILTERS:
+        found = file_filter(words)
+        return None, (found[1] if found else [])
+    if tool in ('sed', 'awk'):
+        rest = [a for a in args if not a.startswith('-')]
+        return (rest[0] if rest and tool == 'sed' else None), rest[1:]
+    return None, [a for k, a in enumerate(args) if not a.startswith('-') and not (k and args[k - 1] in ('-n', '-c', '-f', '-d'))]
+
+
 def read_question(words, base):
     """The ask for reading a file of the code or the docs, or None when it reads elsewhere or writes."""
     tool, args = words[0], words[1:]
@@ -348,15 +400,7 @@ def read_question(words, base):
         return None
     if tool in ('perl', 'ruby') and any(re.fullmatch(r'-\w*i\S*', a) for a in args):
         return None
-    script = None
-    if tool == 'sed':
-        rest = [a for a in args if not a.startswith('-')]
-        script, files = (rest[0], rest[1:]) if rest else (None, [])
-    elif tool == 'awk':
-        rest = [a for a in args if not a.startswith('-')]
-        files = rest[1:]
-    else:
-        files = [a for k, a in enumerate(args) if not a.startswith('-') and not (k and args[k - 1] in ('-n', '-c', '-f', '-d'))]
+    script, files = read_files(words)
     n, from_start = 10, False
     for k, a in enumerate(args):
         m = re.fullmatch(r'-n(\+?\d+)?|-(\d+)', a)
@@ -504,9 +548,17 @@ def question(words, base):
     return None
 
 
+def counts(pipe):
+    """Whether a run of filters counts what it is fed: wc, or grep -c."""
+    return any(os.path.basename(w[0]) == 'wc' or (os.path.basename(w[0]) in ('grep', 'egrep', 'fgrep')
+               and grep_parts(w)[3] & {'c', '--count'}) for w in pipe)
+
+
 def shell_question(line, cwd):
     """The ask replacing a shell line, or None when it may go ahead."""
     if 'map.py' in line or ' map ' in ' ' + line.split('\n')[0] + ' ' and ASK.startswith('map '):
+        return None
+    if line_writes(line, cwd):                              # an edit: the reads beside it check it
         return None
     asked, filtered, parts = script_question(line, cwd) or [], [], commands(line, cwd)
     for k, (words, piped, base) in enumerate(parts):
@@ -525,12 +577,328 @@ def shell_question(line, cwd):
         for w, fed, _ in parts[k + 1:]:
             if not fed or os.path.basename(w[0]) not in FILTERS:
                 break
-            pipe.append(quote(w))
-        if pipe:
-            filtered.append(ASK + quote(q) + ' | ' + ' | '.join(pipe))
+            pipe.append(w)
+        if counts(pipe):
+            continue                                        # a count: nothing of the files is read
+        own = file_filter(words)[0] if os.path.basename(words[0]) in FILE_FILTERS else None      # cut -c1-9 file: the ask, then cut
+        if own or pipe:
+            filtered.append(ASK + quote(q) + ' | ' + ' | '.join(quote(w) for w in ([own] if own else []) + pipe))
         else:
             asked += q
     return '; '.join(([ASK + quote(asked)] if asked else []) + filtered) or None
+
+
+# @map map.guard.commands.rewrite: a line that edits a file, whose reads check the edit; a line of reads only, run through the map in its place
+SIMPLE_SED = re.compile(r'(?:\d+|\$)(?:,(?:\d+|\$))?p|\d+q')                       # sed -n 5,20p: a range of lines, nothing that runs or writes
+SIMPLE_AWK = re.compile(r'NR\s*(?:>=|<=|==|<|>)\s*\d+(?:\s*&&\s*NR\s*(?:>=|<=|==|<|>)\s*\d+)?')   # awk 'NR>=5 && NR<=20'
+SYNTAX = {'for', 'in', 'case', 'select', 'done', 'fi', 'esac', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', '{', '}', '!', 'function'}
+SEGMENT = re.compile(r'(\s*)((?:(?:do|then|else|elif|if|while|until|!|\{|time)\s+)*)(.*?)(\s*)', re.S)
+GIT_READ = {'status', 'log', 'diff', 'show', 'rev-parse', 'branch'}
+GIT_BRANCH_FLAGS = {'--list', '--all', '--remotes', '--verbose', '--show-current', '--no-color', '--color', '--ignore-case', '--merged',
+                    '--no-merged', '--contains', '--no-contains', '--points-at', '--sort', '--format', '--abbrev', '--column', '--no-column'}
+GIT_BRANCH_VALUES = {'--merged', '--no-merged', '--contains', '--no-contains', '--points-at', '--sort', '--format', '--abbrev'}
+
+
+def line_writes(line, cwd):
+    """Whether the line changes a file of the repository: sed -i, perl -i, a redirection or tee into it, patch, git
+    apply, a script that writes."""
+    for words, _, base in commands(line, cwd):
+        tool = os.path.basename(words[0])
+        targets = [words[k + 1] for k, w in enumerate(words[:-1]) if w in ('>', '>>', '&>')] + (words[1:] if tool == 'tee' else [])
+        if any('$' not in t and not t.startswith('-') and inside(t, base) is not None for t in targets):
+            return True
+        if tool == 'patch' or (tool == 'git' and words[1:2] == ['apply']):
+            return True
+        if tool == 'sed' and any(a.startswith('-i') or a == '--in-place' for a in words[1:]):
+            return True
+        if tool in ('perl', 'ruby') and any(re.fullmatch(r'-\w*i\S*', a) for a in words[1:]):
+            return True
+    return any(writes(text) for text in scripts(line, cwd))
+
+
+def is_map(words):
+    """Whether a command runs the map itself (the command of map.json, any of its commands)."""
+    head = ASK.split()[:-1]
+    return words[:len(head)] == head
+
+
+def whole(words, base):
+    """Whether the map answers all a read names: no file or folder of it would be left out of its ask."""
+    tool = os.path.basename(words[0])
+    if tool == 'git' and words[1:2] == ['grep']:
+        tool, words = 'grep', words[1:]
+    if tool in SEARCH:
+        return all(mapped(inside(p, base)) for p in grep_parts([tool] + words[1:])[1])
+    if tool in READ:
+        return all(mapped(inside(f, base), folder_ok=False) for f in read_files([tool] + words[1:])[1])
+    if tool in ('ls', 'tree'):
+        return all(mapped(inside(a, base)) for a in words[1:] if not a.startswith('-'))
+    return tool == 'find'
+
+
+def split_line(line):
+    """[(separator before, text)]: the line cut at each ; && || | |& & newline ( ) outside quotes, every text exactly as
+    written; None when it holds a heredoc, a $( ) or backticks that run (the line cannot be rebuilt)."""
+    if heredocs(line):
+        return None
+    out, buf, sep, quote_, i, n = [], [], '', None, 0, len(line)
+    while i < n:
+        c, nxt = line[i], line[i + 1:i + 2]
+        if quote_ == "'":
+            quote_ = None if c == "'" else quote_
+        elif c == '\\' and nxt:
+            buf.append(line[i:i + 2])
+            i += 2
+            continue
+        elif c == '`' or line.startswith('$(', i):
+            return None
+        elif quote_ == '"':
+            quote_ = None if c == '"' else quote_
+        elif c in '\'"':
+            quote_ = c
+        elif c == '#' and (not buf or buf[-1][-1:].isspace()):
+            j = line.find('\n', i)
+            j = n if j < 0 else j
+            buf.append(line[i:j])
+            i = j
+            continue
+        else:
+            op = ('\n' if c == '\n' else ';;' if line.startswith(';;', i) else ';' if c == ';' else '||' if line.startswith('||', i)
+                  else '|&' if line.startswith('|&', i) else '|' if c == '|' else '(' if c == '(' else ')' if c == ')' else
+                  None if c != '&' or (buf and buf[-1][-1:] in ('<', '>')) or nxt == '>' else '&&' if nxt == '&' else '&')
+            if op:
+                out.append((sep, ''.join(buf)))
+                sep, buf, i = op, [], i + len(op)
+                continue
+        buf.append(c)
+        i += 1
+    out.append((sep, ''.join(buf)))
+    return out
+
+
+def steps(line, cwd):
+    """The line as a list of steps, each a dict: sep, lead, prefix (do, then, if …), core, trail (the text around it, kept as
+    written), words (redirections to /dev/null left out), kind (syntax, cd or cmd), piped (a pipe feeds it) and base (the
+    folder it runs in, cd and ( ) followed); None when the line cannot be rebuilt or a folder is unknown."""
+    segs = split_line(line)
+    if segs is None:
+        return None
+    out, base, stack = [], cwd, []
+    for k, (sep, text) in enumerate(segs):
+        if sep == '(':
+            stack.append(base)
+        elif sep == ')' and stack:
+            base = stack.pop()
+        lead, prefix, core, trail = SEGMENT.fullmatch(text).groups()
+        words = shell_words(re.sub(QUIET_REDIRECT, ' ', core))
+        names = [w for w in words if not re.fullmatch(r'[A-Za-z_]\w*=.*', w)]
+        piped = k > 0 and sep in ('|', '|&')
+        kind = 'syntax' if not names or words[0] in SYNTAX or not words else 'cd' if words[0] == 'cd' and not piped else 'cmd'
+        step = {'sep': sep, 'lead': lead, 'prefix': prefix, 'core': core, 'trail': trail, 'words': words, 'kind': kind, 'piped': piped,
+                'base': base, 'redirected': any(re.fullmatch(r'[<>&]+', w) for w in words)}
+        out.append(step)
+        if kind == 'cd':
+            target = words[1] if len(words) == 2 else None
+            base = None if target is None or '$' in target or target == '-' else os.path.normpath(os.path.join(base, os.path.expanduser(target)))
+        if base is None and k + 1 < len(segs):
+            return None
+    return out
+
+
+def anchored(base, text):
+    """The text run in the folder it was written for: as it is at the root, else in a (cd root && …) of its own."""
+    return text if os.path.realpath(base) == os.path.realpath(ROOT) else f'(cd {quote_word(ROOT)} && {text})'
+
+
+# @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
+def git_read_only(words, base):
+    """Whether a git command only reads this repository: status, log, diff, show, rev-parse, branch (listing)."""
+    args, i = words[1:], 0
+    while i < len(args) and args[i].startswith('-'):
+        if args[i] == '-C' and i + 1 < len(args):
+            base, i = os.path.join(base, os.path.expanduser(args[i + 1])), i + 2
+        elif args[i] in ('--no-pager', '--no-optional-locks'):
+            i += 1
+        else:
+            return False
+    if inside('.', base) is None or i >= len(args) or args[i] not in GIT_READ:
+        return False
+    sub, rest = args[i], args[i + 1:]
+    if sub == 'branch':
+        listing = any(a in ('-l', '--list') or re.fullmatch(r'-[a-z]*l[a-z]*', a) for a in rest)
+        for k, a in enumerate(rest):
+            if a.startswith('--'):
+                if a.split('=')[0] not in GIT_BRANCH_FLAGS:
+                    return False
+            elif a.startswith('-'):
+                if not re.fullmatch(r'-[arvli]+', a):
+                    return False
+            elif not (listing or (k and rest[k - 1] in GIT_BRANCH_VALUES)):
+                return False                                  # a name with no listing flag makes a branch
+        return True
+    return not any(a in ('-O', '--open-files-in-pager', '--no-index', '--ext-diff', '--output') or a.startswith(('-O', '--output=')) for a in rest)
+
+
+def date_read_only(args):
+    return all(a.startswith('+') or a in ('-u', '--utc', '--universal', '-R', '--rfc-email') or re.fullmatch(r'-I\w*|--iso-8601(=\w+)?', a) for a in args)
+
+
+def inside_all(operands, base):
+    return all(inside(a, base) is not None for a in operands)
+
+
+def safe_head(words, base):
+    """Whether a read of the repository stays safe as it was written: a search that only counts, cat, head, tail, ls …, sed
+    with a range, awk with NR conditions; every file in the repository and nothing that runs a command or writes."""
+    tool, args = os.path.basename(words[0]), words[1:]
+    operands = [a for a in args if not a.startswith('-')]
+    if tool in SEARCH:
+        pats, paths, _, _ = grep_parts(words)
+        return not any(a.split('=')[0] in ('--pre', '--hostname-bin') for a in args) and inside_all(paths or ['.'], base)
+    if tool in ('cat', 'head', 'tail', 'nl', 'ls', 'tree'):
+        return inside_all(operands, base)
+    if tool in FILE_FILTERS:
+        return file_filter(words) is not None and inside_all(operands, base)
+    if tool == 'find':
+        return not any(a in ('-exec', '-execdir', '-ok', '-okdir', '-delete') or a.startswith(('-fprint', '-fls')) for a in args) and inside_all(operands[:1] or ['.'], base)
+    if tool == 'sed':
+        return set(a for a in args if a.startswith('-')) <= {'-n', '-E', '-r'} and bool(operands) and SIMPLE_SED.fullmatch(operands[0]) is not None and inside_all(operands[1:], base)
+    if tool == 'awk':
+        return not any(a.startswith('-') for a in args) and bool(operands) and SIMPLE_AWK.fullmatch(operands[0]) is not None and inside_all(operands[1:], base)
+    return False
+
+
+def safe_step(words, base):
+    """Whether a step that is no read of the map's may stay in a line Claude Code runs without asking: it only reads and
+    touches nothing outside the repository."""
+    tool, args = os.path.basename(words[0]), words[1:]
+    if is_map(words) or tool in ('echo', 'printf', 'true', ':', 'pwd'):
+        return True
+    if tool == 'wc':
+        return inside_all([a for a in args if not a.startswith('-')], base)
+    if tool == 'date':
+        return date_read_only(args)
+    if tool == 'which':
+        return all(not a.startswith('-') or a in ('-a', '-s') for a in args)
+    if words[0] == 'command':
+        return len(words) > 2 and words[1] in ('-v', '-V')
+    if len(words) == 2 and args == ['--version'] and '/' not in words[0]:
+        return True
+    if tool == 'git':
+        return git_read_only(words, base)
+    return tool in SEARCH and safe_head(words, base)                                   # grep -c file, grep -q …: a count or a yes
+
+
+def filter_ok(words):
+    """Whether a filter in a pipe is kept: head, tail, cut, grep, sort, uniq, wc, tr, column, or sed -n with a range."""
+    if os.path.basename(words[0]) in KEPT:
+        return True
+    return (os.path.basename(words[0]) == 'sed' and set(a for a in words[1:] if a.startswith('-')) <= {'-n'}
+            and [a for a in words[1:] if not a.startswith('-')] != [] and len([a for a in words[1:] if not a.startswith('-')]) == 1
+            and SIMPLE_SED.fullmatch([a for a in words[1:] if not a.startswith('-')][0]) is not None)
+
+
+# @end map.guard.commands.rewrite.readonly
+
+
+def chain_read(chain):
+    """What a pipeline's first command is: ('read', ask, steps replaced) for a read the map answers, ('count',) for one that
+    only counts, ('step',) for anything else, ('syntax',) for a loop's keywords, an assignment or a cd."""
+    first = chain[0]
+    words, base = first['words'], first['base']
+    if first['kind'] != 'cmd':
+        return ('syntax',)
+    if first['redirected']:
+        return ('step',)
+    if os.path.basename(words[0]) == 'find' and len(chain) > 1 and chain[1]['words'][:1] == ['xargs'] and len(chain[1]['words']) > 1 and os.path.basename(chain[1]['words'][1]) in SEARCH:
+        pattern = next((words[j + 1] for j, a in enumerate(words) if a in ('-name', '-iname') and j + 1 < len(words)), '*')
+        root = next((a for a in words[1:] if not a.startswith('-')), '.')
+        q = grep_question(chain[1]['words'][1:] + ['-r', root, '--include=' + pattern], base)
+        return ('read', ASK + quote(q), 2) if q else ('step',)
+    q = question(words, base)
+    if not q:
+        return ('step',)
+    run = []
+    for s in chain[1:]:
+        if not s['words'] or os.path.basename(s['words'][0]) not in FILTERS:
+            break
+        run.append(s['words'])
+    if counts(run):
+        return ('count',)
+    own = file_filter(words)[0] if os.path.basename(words[0]) in FILE_FILTERS else None
+    return ('read', ASK + quote(q) + (' | ' + quote(own) if own else ''), 1)
+
+
+def rebuild(line, cwd, in_place):
+    """(text, replaced, ok, pure) of the line with each read of the code or the docs as its ask, every other step as it was
+    written: in place (Claude Code: from the root, cd steps dropped, steps outside the root in a (cd …) of their own) or to
+    send again (each ask in a (cd root && …) when the line is not at the root). ok: every step only reads; pure: reads and
+    their filters only. None when the line cannot be rebuilt."""
+    st = steps(line, cwd)
+    if st is None or script_question(line, cwd):
+        return None
+    out, replaced, ok, pure, k = [], False, True, True, 0
+    while k < len(st):
+        j = k + 1
+        while j < len(st) and st[j]['piped']:
+            j += 1
+        chain, first = st[k:j], st[k]
+        kind = chain_read(chain)
+        used = kind[2] if kind[0] == 'read' else 1
+        for s in chain[used:]:
+            ok = ok and bool(s['words']) and filter_ok(s['words']) and not s['redirected']
+            pure = pure and bool(s['words']) and os.path.basename(s['words'][0]) in FILTERS
+        if kind[0] == 'syntax':
+            if first['kind'] == 'cd' and in_place:
+                out.append({**first, 'drop': 'transfer'})
+            else:
+                out.append(first)
+        elif kind[0] == 'read':
+            replaced = True
+            ok = ok and used == 1 and whole(first['words'], first['base'])          # xargs could run anything
+            text = first['lead'] + first['prefix'] + (kind[1] if in_place else anchored(first['base'], kind[1])) + first['trail']
+            out.append({**first, 'text': text})
+            if used == 2:
+                out.append({**chain[1], 'drop': 'own'})
+        else:
+            pure = False
+            words = first['words']
+            ok = ok and not first['redirected'] and (safe_head(words, first['base']) and whole(words, first['base']) if kind[0] == 'count' else safe_step(words, first['base']))
+            text = first['lead'] + first['prefix'] + first['core'] + first['trail']
+            if in_place and os.path.realpath(first['base']) != os.path.realpath(ROOT):
+                text = first['lead'] + first['prefix'] + f'(cd {quote_word(first["base"])} && {first["core"].strip()})' + first['trail']
+            out.append({**first, 'text': text})
+        out += [s for s in chain[used:]]
+        k = j
+    pieces, carry = [], None
+    for s in out:
+        sep = s['sep'] if carry is None else carry
+        if s.get('drop') == 'transfer':
+            carry = s['sep']
+            continue
+        carry = None
+        if s.get('drop') == 'own':
+            continue
+        pieces.append((sep, s.get('text', s['lead'] + s['prefix'] + s['core'] + s['trail'])))
+    text = ''.join(sep + t for sep, t in pieces)
+    return text, replaced, ok, pure
+
+
+def rewrite(line, cwd):
+    """The line run through the map in its place, from the root: each read of the code or the docs as its ask, every other step
+    as written, in order; None when a step does more than read, or a filter could run a command."""
+    built = rebuild(line, cwd, True)
+    if not built or not built[1] or not built[2]:
+        return None
+    return f'(cd {quote_word(ROOT)} && ' + built[0].strip() + ')'
+
+
+def resend(line, cwd):
+    """The whole line to send again when it is refused and mixed (reads beside other steps): each read as its ask, every other
+    step exactly as written, the same separators; None when it is reads only (the refusal names their asks) or cannot be rebuilt."""
+    built = rebuild(line, cwd, False)
+    return built[0] if built and built[1] and not built[3] else None
+# @end map.guard.commands.rewrite
 # @end map.guard.commands
 
 
@@ -615,10 +983,27 @@ def detect(data):
     return 'claude'
 
 
-def answer(agent, asked):
-    reason = REASON + asked
+def decide(agent, data):
+    """The hook's answer for this call, or None when it goes ahead: in Claude Code a shell line of reads only runs
+    through the map in its place; any other read of the code or the docs is refused with its ask."""
+    asked = replacement(agent, data)
+    if not asked:
+        return None
+    kind, given, cwd = normalise(agent, data)
+    command = given.get('command') or ''
+    line = rewrite(command, cwd) if agent == 'claude' and kind == 'shell' else None
+    if line:
+        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'allow',
+                                       'permissionDecisionReason': 'map-guard: read through the map',
+                                       'updatedInput': {**given, 'command': line}, 'additionalContext': NOTE + line}}
+    return answer(agent, asked, resend(command, cwd) if kind == 'shell' else None)
+
+
+def answer(agent, asked, again=None):
+    """The refusal: the asks, or, for a line of reads beside other steps, the whole line to send again."""
+    reason = (REASON_LINE + again) if again else REASON + asked
     if agent == 'cursor':
-        return {'permission': 'deny', 'user_message': 'map-guard: read it through the map (ask). ' + asked, 'agent_message': reason}
+        return {'permission': 'deny', 'user_message': 'map-guard: read it through the map (ask). ' + (again or asked), 'agent_message': reason}
     if agent == 'copilot':
         return {'permissionDecision': 'deny', 'permissionDecisionReason': reason}
     if agent == 'gemini':
@@ -678,6 +1063,11 @@ def main(argv):
     if argv[:1] == ['try'] and len(argv) == 2:
         asked = shell_question(argv[1], os.getcwd())
         print(asked or 'goes ahead')
+        line = asked and rewrite(argv[1], os.getcwd())
+        if line:
+            print('Claude Code runs in its place: ' + line)
+        elif asked and resend(argv[1], os.getcwd()):
+            print('Send instead: ' + resend(argv[1], os.getcwd()))
         return
     agent = argv[argv.index('--agent') + 1] if '--agent' in argv and argv.index('--agent') + 1 < len(argv) else None
     try:
@@ -685,11 +1075,11 @@ def main(argv):
         if not isinstance(data, dict):
             return
         agent = agent or detect(data)
-        asked = replacement(agent, data)
+        out = decide(agent, data)
     except Exception:                                       # noqa: BLE001 — a guard that fails lets the call go ahead
         return
-    if asked:
-        print(json.dumps(answer(agent, asked), ensure_ascii=False))
+    if out:
+        print(json.dumps(out, ensure_ascii=False))
 
 
 if __name__ == '__main__':

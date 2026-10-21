@@ -29,6 +29,6 @@ whole conversation, so questions go in rounds: every question of a round in one 
    with a script that only prints them, or with a file-reading tool on whole files**: `ask` answers the same
    question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a
    range of lines before an edit.
-4. **Tag what you add or move** (`docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
+4. **Tag what you add or move** (`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
    `@end <id>` when other code follows it; keep purposes true. **End each change with `python3 tools/map.py check`**, which also
    checks that the map is current (`python3 tools/map.py build` writes it again).

@@ -13,7 +13,7 @@ setting has a default; an unknown setting is refused with the list of the known 
   "describe": [["*.min.js", "generated", "a bundle, never read whole"], ["assets/*.png", "asset", "a picture"]],
   "ignore": ["dist/", "vendor/"],
   "forms": {".kt": "slash", ".nim": "hash"},
-  "limits": {"untagged": 30, "block": 16000},
+  "limits": {"untagged": 30, "block": 16000, "answer": 28000},
   "tests": ["tests/**", "**/*.spec.ts"],
   "recipes": {"new-discount": {"about": "…", "words": "discount rule coupon", "steps": [["shop.prices.discounts", "add the rule"], ["docs/CART.md", "describe it"]]}},
   "strict": false,
@@ -31,7 +31,7 @@ setting has a default; an unknown setting is refused with the list of the known 
 | `describe` | `[]` | files without code to read, each `[pattern, kind, about]`: a code file that matches is listed under `other:` in `map.yaml` with its kind and description instead of being expected to carry tags (generated code, bundles, fixtures kept as they were) |
 | `ignore` | `[]` | paths left out of the map altogether, besides `.gitignore` and the usual folders (`node_modules`, `dist`, `build`, `target`, `vendor`, `.venv` …): folders (`dist/`), files or globs. `install.sh` puts the tool's own copies here (`tools/map.py` … or `tools/map.mjs` …): they are its code, not the repository's |
 | `forms` | `{}` | the comment form of an extension the table in `map.py` lacks: `slash` (`/* */`, `//`), `hash` (`#`), `html` (`<!-- -->`), `dash` (`--`), `semicolon` (`;`), `percent` (`%`); `null` for an extension that must carry no tags |
-| `limits` | `{"untagged": 30, "block": 16000}` | non-blank lines a tagged file may have outside any block; characters of its own code a block may hold |
+| `limits` | `{"untagged": 30, "block": 16000, "answer": 28000}` | non-blank lines a tagged file may have outside any block; characters of its own code a block may hold; characters one `ask` of several questions prints before its longest answers leave their code out (Claude Code shows about 30,000 inline and files the rest away; `ask --budget N` sets it for one call, `0` for none) |
 | `tests` | `[]` | globs of test files, besides the usual names (`tests/`, `test/`, `spec/`, `__tests__/`, `test_*.py`, `*_test.go`, `*.test.js`, `*.spec.ts`, `*Test.java`, `*_spec.rb` …) |
 | `recipes` | `{}` | the steps of a kind of change across layers, by name: `about` (one line), `words` (the task words that match it, two or more match), `checked` (the change it was checked against, optional), `steps` (a list of `[block id or file, what to do there]`), `note` (optional). `check` fails when a step names a block or a file that is gone |
 | `strict` | `false` | `check` also fails on code files that carry no tag yet: for CI, once everything is tagged |

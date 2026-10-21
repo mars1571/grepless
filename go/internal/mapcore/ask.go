@@ -2,9 +2,12 @@
 package mapcore
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -16,6 +19,34 @@ const (
 	CUT   = 240
 	FEW   = 12
 )
+
+// Flags of the call: --json prints one JSON document, --literal searches every question as plain text.
+var (
+	JSONMode    bool
+	LiteralMode bool
+	record      = map[string][]any{}
+)
+
+// Rec keeps one structured fact of the answer being built (only with --json).
+func Rec(kind string, v any) {
+	if JSONMode {
+		record[kind] = append(record[kind], v)
+	}
+}
+
+func recList(kind string) []any {
+	if l := record[kind]; l != nil {
+		return l
+	}
+	return []any{}
+}
+
+func blockJSON(b *Block) *OMap {
+	return Obj("id", b.ID, "file", b.Path, "first", b.First, "last", b.Last, "purpose", b.Purpose)
+}
+
+// PrintJSON writes one compact JSON document and a newline.
+func PrintJSON(doc any) { Print(Jcompact(doc)) }
 
 type Section struct {
 	First, Last, Level int
@@ -304,6 +335,11 @@ func ShowHits(repo *Repo, hits []Hit, every, numbers bool) {
 	places := map[string]*place{}
 	for _, h := range hits {
 		var key, label string
+		var block any
+		if b := repo.Holder(h.Path, h.Line); b != nil {
+			block = b.ID
+		}
+		Rec("hits", Obj("file", h.Path, "line", h.Line, "text", h.Text, "block", block))
 		if b := repo.Holder(h.Path, h.Line); b != nil {
 			key = fmt.Sprintf("%s\x00%s\x00%d", h.Path, b.ID, b.First)
 			label = fmt.Sprintf("%s  %s:%d-%d  %s", b.ID, h.Path, b.First, b.Last, Short(b.Purpose, 110))
@@ -359,6 +395,9 @@ func ShowHits(repo *Repo, hits []Hit, every, numbers bool) {
 func answerLines(repo *Repo, p string, a, b int, ranged bool) {
 	lines := repo.Lines(p)
 	label := ""
+	if held := repo.Holder(p, a); !ranged && held != nil {
+		Rec("blocks", blockJSON(held))
+	}
 	if !ranged {
 		h := repo.Holder(p, a)
 		var s *Section
@@ -492,6 +531,7 @@ func answerFile(repo *Repo, p string) {
 			for len(outer) > 0 && outer[len(outer)-1] < b.First {
 				outer = outer[:len(outer)-1]
 			}
+			Rec("blocks", blockJSON(b))
 			line := fmt.Sprintf("%s-%s%s%s  %s", PadL(fmt.Sprint(b.First), 6), PadR(fmt.Sprint(b.Last), 6), strings.Repeat("  ", len(outer)), b.ID, Short(b.Purpose, 110))
 			if ns := named[b.ID]; len(ns) > 0 {
 				shown := ns
@@ -552,6 +592,7 @@ func answerFiles(repo *Repo, paths []string, about string) {
 				what = secs[0].Title
 			}
 		}
+		Rec("files", Obj("file", p, "lines", len(repo.Lines(p)), "what", what))
 		Printf("    %s  (%d lines)  %s", p, len(repo.Lines(p)), what)
 	}
 }
@@ -650,6 +691,7 @@ func answerPart(repo *Repo, p, words string) bool {
 	for _, b := range repo.ByFile[p] {
 		if wordsMatch(b.ID+" "+b.Purpose, ws) {
 			found = true
+			Rec("blocks", blockJSON(b))
 			Printf("  %s:%d-%d  %s: %s", p, b.First, b.Last, b.ID, b.Purpose)
 			put(repo.Lines(p), b.First, b.Last)
 		}
@@ -675,10 +717,12 @@ func answerBlock(repo *Repo, q string) {
 					nested = append(nested, x)
 				}
 			}
+			Rec("blocks", blockJSON(b))
 			Printf("  %s:%d-%d  %s: %s", b.Path, b.First, b.Last, b.ID, b.Purpose)
 			if b.Last-b.First+1 > SMALL && len(nested) > 0 {
 				Printf("  %d lines; the blocks inside it (one: ask <id>, or %s:<first>-<last>)", b.Last-b.First+1, b.Path)
 				for _, x := range nested {
+					Rec("blocks", blockJSON(x))
 					Printf("%s-%s%s  %s", PadL(fmt.Sprint(x.First), 6), PadR(fmt.Sprint(x.Last), 6), x.ID, Short(x.Purpose, 110))
 				}
 			} else {
@@ -688,6 +732,7 @@ func answerBlock(repo *Repo, q string) {
 	case len(inside) <= 60:
 		Printf("  %d blocks under %s (one: ask <id>)", len(inside), q)
 		for _, b := range inside {
+			Rec("blocks", blockJSON(b))
 			Printf("    %s %s:%d-%d  %s", PadR(b.ID, 44), b.Path, b.First, b.Last, Short(b.Purpose, 110))
 		}
 	default:
@@ -721,6 +766,7 @@ func answerBlock(repo *Repo, q string) {
 	}
 }
 
+// @map map.ask.answer.name: an identifier answered by its declarations and the lines naming it, and any other text searched as a pattern or, with --literal, as it is
 func answerName(repo *Repo, q string, places []string, every bool) bool {
 	word := q
 	if !strings.HasPrefix(q, "--") {
@@ -738,6 +784,7 @@ func answerName(repo *Repo, q string, places []string, every bool) bool {
 		if where == "" {
 			where = d.Path
 		}
+		Rec("declarations", Obj("what", d.What, "file", d.Path, "first", d.First, "last", d.Last))
 		Printf("  %s: %s:%d-%d  in %s", d.What, d.Path, d.First, d.Last, where)
 		if len(decls) <= 3 && d.Last-d.First < LONG {
 			put(repo.Lines(d.Path), d.First, d.Last)
@@ -794,25 +841,29 @@ func unescapedPipe(q string) bool {
 }
 
 func answerText(repo *Repo, q string, places []string, every bool) bool {
-	if strings.Contains(q, `\|`) && !unescapedPipe(q) {
+	if !LiteralMode && strings.Contains(q, `\|`) && !unescapedPipe(q) {
 		q = strings.ReplaceAll(q, `\|`, "|")
 	}
-	rx, err := regexp.Compile(q)
-	if err != nil {
-		rx = regexp.MustCompile(regexp.QuoteMeta(q))
+	rx := regexp.MustCompile(regexp.QuoteMeta(q))
+	if !LiteralMode {
+		if parsed, err := regexp.Compile(q); err == nil {
+			rx = parsed
+		}
 	}
 	hits := Search(repo, rx, places, nil)
 	if len(hits) > 0 {
 		ShowHits(repo, hits, every, false)
 		return true
 	}
-	if strings.Contains(strings.TrimSpace(q), " ") {
+	if !LiteralMode && strings.Contains(strings.TrimSpace(q), " ") {
 		Print("  no line holds it; the blocks whose id, purpose or file have these words:")
 		Find(strings.Fields(q))
 		return true
 	}
 	return false
 }
+
+// @end map.ask.answer.name
 
 var lineQ = regexp.MustCompile(`^(.+?):(\d+)(?:-(\d+))?$`)
 var globQ = regexp.MustCompile(`[*?]`)
@@ -831,7 +882,13 @@ func Ask(args []string) {
 	}
 	var questions []question
 	var waiting []string
+	budget := CFG.Limits["answer"]
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--budget" && i+1 < len(args) && allDigits(args[i+1]) {
+			budget, _ = strconv.Atoi(args[i+1])
+			i++
+			continue
+		}
 		if args[i] == "--in" && i+1 < len(args) {
 			var places []string
 			for _, x := range strings.Split(args[i+1], ",") {
@@ -851,7 +908,13 @@ func Ask(args []string) {
 			i++
 			continue
 		}
-		if args[i] != "--all" {
+		switch args[i] {
+		case "--json":
+			JSONMode = true
+		case "--literal", "-F":
+			LiteralMode = true
+		case "--all":
+		default:
 			waiting = append(waiting, args[i])
 		}
 	}
@@ -866,69 +929,160 @@ func Ask(args []string) {
 	for _, b := range repo.Blocks {
 		ids[b.ID] = true
 	}
+	var answers []asked
+	var docs []any
 	for _, qu := range questions {
-		q := qu.q
-		Print("== " + q)
-		if m := lineQ.FindStringSubmatch(q); m != nil {
-			if p, ok := Relative(m[1]); ok && IsFile(p) {
-				a, b := 0, 0
-				fmt.Sscanf(m[2], "%d", &a)
-				if m[3] != "" {
-					fmt.Sscanf(m[3], "%d", &b)
-					answerLines(repo, p, a, b, true)
-				} else {
-					answerLines(repo, p, a, 0, false)
-				}
-				continue
-			}
-		}
-		if i := strings.Index(q, "#"); i >= 0 {
-			head, part := q[:i], q[i+1:]
-			if part != "" && head != "" {
-				if p, ok := Relative(head); ok && IsFile(p) {
-					if !answerPart(repo, p, part) {
-						Printf("  nothing in %s is called \"%s\"; its outline:", p, part)
-						answerFile(repo, p)
-					}
-					continue
-				}
-			}
-		}
-		p, ok := Relative(q)
-		switch {
-		case ok && IsFile(p):
-			answerFile(repo, p)
-		case ok && IsDir(p):
-			answerFolder(repo, p)
-		case globQ.MatchString(q) && strings.Contains(q, "/") && !regexQ.MatchString(q):
-			pat := strings.TrimLeft(q, "./")
-			var paths []string
-			for _, x := range repo.Files {
-				if Fnmatch(x, pat) {
-					paths = append(paths, x)
-				}
-			}
-			answerFiles(repo, paths, q)
-		case len(NamesIn(q)) > 0:
-			ns := NamesIn(q)
-			for _, name := range ns {
-				if len(ns) > 1 {
-					Printf("  %s:", name)
-				} else {
-					Printf("  the name %s", name)
-				}
-				if !answerName(repo, name, qu.places, every) {
-					Print("  nothing in the code or the docs holds it")
-				}
-			}
-		case ids[q] || prefixOf(ids, q+"."):
-			answerBlock(repo, q)
-		case (Identifier(q) || wordRx.MatchString(q)) && answerName(repo, q, qu.places, every):
-		case !answerText(repo, q, qu.places, every):
-			Print("  nothing in the code or the docs holds it")
+		saved := out
+		var buf bytes.Buffer
+		out = bufio.NewWriterSize(&buf, 1<<16)
+		record = map[string][]any{}
+		answer(repo, ids, qu.q, qu.places, every)
+		out.Flush()
+		out = saved
+		answers = append(answers, asked{qu.q, buf.String()})
+		if JSONMode {
+			docs = append(docs, Obj("question", qu.q, "blocks", recList("blocks"), "declarations", recList("declarations"),
+				"files", recList("files"), "hits", recList("hits"),
+				"found", !strings.Contains(buf.String(), "nothing in the code or the docs holds it"), "text", buf.String()))
 		}
 	}
+	if JSONMode {
+		PrintJSON(Obj("questions", docs))
+		SaveCache()
+		return
+	}
+	for _, t := range fit(answers, budget) {
+		out.WriteString(t)
+	}
 	SaveCache()
+}
+
+type asked struct{ q, text string }
+
+// answer: one question of a call, answered whole.
+func answer(repo *Repo, ids map[string]bool, q string, places []string, every bool) {
+	Print("== " + q)
+	if LiteralMode {
+		if !answerText(repo, q, places, every) {
+			Print("  nothing in the code or the docs holds it")
+		}
+		return
+	}
+	if m := lineQ.FindStringSubmatch(q); m != nil {
+		if p, ok := Relative(m[1]); ok && IsFile(p) {
+			a, b := 0, 0
+			fmt.Sscanf(m[2], "%d", &a)
+			if m[3] != "" {
+				fmt.Sscanf(m[3], "%d", &b)
+				answerLines(repo, p, a, b, true)
+			} else {
+				answerLines(repo, p, a, 0, false)
+			}
+			return
+		}
+	}
+	if i := strings.Index(q, "#"); i >= 0 {
+		head, part := q[:i], q[i+1:]
+		if part != "" && head != "" {
+			if p, ok := Relative(head); ok && IsFile(p) {
+				if !answerPart(repo, p, part) {
+					Printf("  nothing in %s is called \"%s\"; its outline:", p, part)
+					answerFile(repo, p)
+				}
+				return
+			}
+		}
+	}
+	p, ok := Relative(q)
+	switch {
+	case ok && IsFile(p):
+		answerFile(repo, p)
+	case ok && IsDir(p):
+		answerFolder(repo, p)
+	case globQ.MatchString(q) && strings.Contains(q, "/") && !regexQ.MatchString(q):
+		pat := strings.TrimLeft(q, "./")
+		var paths []string
+		for _, x := range repo.Files {
+			if Fnmatch(x, pat) {
+				paths = append(paths, x)
+			}
+		}
+		answerFiles(repo, paths, q)
+	case len(NamesIn(q)) > 0:
+		ns := NamesIn(q)
+		for _, name := range ns {
+			if len(ns) > 1 {
+				Printf("  %s:", name)
+			} else {
+				Printf("  the name %s", name)
+			}
+			if !answerName(repo, name, places, every) {
+				Print("  nothing in the code or the docs holds it")
+			}
+		}
+	case ids[q] || prefixOf(ids, q+"."):
+		answerBlock(repo, q)
+	case (Identifier(q) || wordRx.MatchString(q)) && answerName(repo, q, places, every):
+	case !answerText(repo, q, places, every):
+		Print("  nothing in the code or the docs holds it")
+	}
+}
+
+// @map map.ask.answer.fit: a call's answers kept within its budget of characters: the longest leave their code out, and say so
+var codeLine = regexp.MustCompile(`^\d+\t`)
+
+// fit: a call's answers within its budget of characters: while they run over it, the longest answer (the first of
+// equals) keeps its places and leaves out its lines of code, and says so. One question is always answered whole.
+func fit(answers []asked, budget int) []string {
+	texts := make([]string, len(answers))
+	total := 0
+	for k, a := range answers {
+		texts[k] = a.text
+		total += utf8.RuneCountInString(a.text)
+	}
+	if budget <= 0 || len(texts) < 2 {
+		return texts
+	}
+	order := make([]int, len(texts))
+	for k := range order {
+		order[k] = k
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return utf8.RuneCountInString(texts[order[i]]) > utf8.RuneCountInString(texts[order[j]])
+	})
+	for _, k := range order {
+		if total <= budget {
+			break
+		}
+		lines := strings.Split(strings.TrimRight(texts[k], "\n"), "\n")
+		var kept []string
+		for _, x := range lines {
+			if !codeLine.MatchString(x) {
+				kept = append(kept, x)
+			}
+		}
+		if len(kept) == len(lines) {
+			continue
+		}
+		short := strings.Join(append(kept, fmt.Sprintf("  \u2026 %d lines of code left out to keep this call under %s characters: ask %s in a call of its own", len(lines)-len(kept), Commas(budget), answers[k].q)), "\n") + "\n"
+		total += utf8.RuneCountInString(short) - utf8.RuneCountInString(texts[k])
+		texts[k] = short
+	}
+	return texts
+}
+
+// @end map.ask.answer.fit
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func prefixOf(ids map[string]bool, prefix string) bool {

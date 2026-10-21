@@ -1,0 +1,4 @@
+rc=1
+
+[stderr]
+No block matches those words. Try others, or <map> find <word>.

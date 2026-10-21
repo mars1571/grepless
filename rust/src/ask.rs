@@ -5,7 +5,7 @@ use crate::parse::{everything, facts, save_cache, Block};
 use crate::query::{find, identifier};
 use indexmap::IndexMap;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -234,9 +234,13 @@ pub fn search_word(repo: &Repo, word: &str, places: &[String], skip: &[Skip], hy
     hits
 }
 
+/// A block as `--json` shows it.
+pub fn block_json(b: &Block) -> Value { json!({"id": b.id, "file": b.path, "first": b.first, "last": b.last, "purpose": b.purpose}) }
+
 pub fn show_hits(repo: &Repo, hits: &[Hit], every: bool, numbers: bool) {
     let mut places: IndexMap<String, (String, Vec<&Hit>)> = IndexMap::new();
     for h in hits {
+        rec("hits", json!({"file": h.path, "line": h.line, "text": h.text, "block": repo.holder(&h.path, h.line).map(|b| b.id)}));
         let (key, label) = if let Some(b) = repo.holder(&h.path, h.line) {
             (format!("{}\0{}\0{}", h.path, b.id, b.first), format!("{}  {}:{}-{}  {}", b.id, h.path, b.first, b.last, short(&b.purpose, 110)))
         } else if let Some(s) = if is_doc_ext(&suffix(&h.path).to_lowercase()) { repo.section_at(&h.path, h.line) } else { None } {
@@ -284,6 +288,7 @@ fn answer_lines(repo: &Repo, p: &str, a0: usize, b0: Option<usize>) {
     };
     if a < 1 { a = 1; }
     if b > lines.len() { b = lines.len(); }
+    if let Some(h) = repo.holder(p, a0) { if b0.is_none() { rec("blocks", block_json(&h)); } }
     print(&format!("  {}:{}-{}{}", p, a, b, if label.is_empty() { String::new() } else { format!("  {}", label) }));
     put(&lines, a, b);
 }
@@ -348,6 +353,7 @@ fn answer_file(repo: &Repo, p: &str) {
         let mut outer: Vec<usize> = Vec::new();
         for b in bs {
             while outer.last().map(|l| *l < b.first).unwrap_or(false) { outer.pop(); }
+            rec("blocks", block_json(&b));
             let mut line = format!("{}-{}{}{}  {}", pad_l(&b.first.to_string(), 6), pad_r(&b.last.to_string(), 6), "  ".repeat(outer.len()), b.id, short(&b.purpose, 110));
             if let Some(ns) = named.get(&b.id) {
                 line.push_str(&format!("  [{}{}]", ns.iter().take(8).map(|s| s.as_str()).collect::<Vec<_>>().join(", "), if ns.len() > 8 { " …" } else { "" }));
@@ -379,6 +385,7 @@ fn answer_files(repo: &Repo, paths: &[String], about: &str) {
             Some(b) => short(&b.purpose, 90),
             None => if is_doc_ext(&suffix(p).to_lowercase()) { repo.sections(p).first().map(|s| s.title.clone()).unwrap_or_default() } else { String::new() },
         };
+        rec("files", json!({"file": p, "lines": repo.lines(p).len(), "what": what}));
         print(&format!("    {}  ({} lines)  {}", p, repo.lines(p).len(), what));
     }
 }
@@ -432,6 +439,7 @@ fn answer_part(repo: &Repo, p: &str, words: &str) -> bool {
     }
     let found: Vec<Block> = repo.by_file.get(p).cloned().unwrap_or_default().into_iter().filter(|b| words_match(&format!("{} {}", b.id, b.purpose), &ws)).collect();
     for b in &found {
+        rec("blocks", block_json(b));
         print(&format!("  {}:{}-{}  {}: {}", p, b.first, b.last, b.id, b.purpose));
         put(&repo.lines(p), b.first, b.last);
     }
@@ -443,11 +451,13 @@ fn answer_block(repo: &Repo, q: &str) {
     let inside: Vec<&Block> = repo.blocks.iter().filter(|b| b.id.starts_with(&format!("{}.", q))).collect();
     if !exact.is_empty() {
         for b in exact {
+            rec("blocks", block_json(b));
             let nested: Vec<&Block> = repo.by_file[&b.path].iter().filter(|x| !(x.id == b.id && x.first == b.first) && b.first <= x.first && x.last <= b.last).collect();
             print(&format!("  {}:{}-{}  {}: {}", b.path, b.first, b.last, b.id, b.purpose));
             if b.last - b.first + 1 > SMALL && !nested.is_empty() {
                 print(&format!("  {} lines; the blocks inside it (one: ask <id>, or {}:<first>-<last>)", b.last - b.first + 1, b.path));
                 for x in nested {
+                    rec("blocks", block_json(x));
                     print(&format!("{}-{}{}  {}", pad_l(&x.first.to_string(), 6), pad_r(&x.last.to_string(), 6), x.id, short(&x.purpose, 110)));
                 }
             } else {
@@ -457,6 +467,7 @@ fn answer_block(repo: &Repo, q: &str) {
     } else if inside.len() <= 60 {
         print(&format!("  {} blocks under {} (one: ask <id>)", inside.len(), q));
         for b in inside {
+            rec("blocks", block_json(b));
             print(&format!("    {} {}:{}-{}  {}", pad_r(&b.id, 44), b.path, b.first, b.last, short(&b.purpose, 110)));
         }
     } else {
@@ -481,6 +492,7 @@ fn answer_name(repo: &Repo, q: &str, places: &[String], every: bool) -> bool {
         print(&format!("  declared in {} places (the code of one: ask <file>:<first>-<last>)", decls.len()));
     }
     for d in &decls {
+        rec("declarations", json!({"what": d.what, "file": d.path, "first": d.first, "last": d.last}));
         let mut wh = repo.where_(&d.path, d.first, 0);
         if wh.is_empty() { wh = d.path.clone(); }
         print(&format!("  {}: {}:{}-{}  in {}", d.what, d.path, d.first, d.last, wh));
@@ -517,14 +529,15 @@ fn unescaped_pipe(q: &str) -> bool {
 }
 
 fn answer_text(repo: &Repo, q0: &str, places: &[String], every: bool) -> bool {
-    let q = if q0.contains("\\|") && !unescaped_pipe(q0) { q0.replace("\\|", "|") } else { q0.to_string() };
-    let r = Regex::new(&q).unwrap_or_else(|_| Regex::new(&regex::escape(&q)).unwrap());
+    let literal = literal_on();
+    let q = if !literal && q0.contains("\\|") && !unescaped_pipe(q0) { q0.replace("\\|", "|") } else { q0.to_string() };
+    let r = if literal { Regex::new(&regex::escape(&q)).unwrap() } else { Regex::new(&q).unwrap_or_else(|_| Regex::new(&regex::escape(&q)).unwrap()) };
     let hits = search(repo, &r, places, &[]);
     if !hits.is_empty() {
         show_hits(repo, &hits, every, false);
         return true;
     }
-    if q.trim().contains(' ') {
+    if !literal && q.trim().contains(' ') {
         print("  no line holds it; the blocks whose id, purpose or file have these words:");
         find(&q.split_whitespace().map(String::from).collect::<Vec<_>>());
         return true;
@@ -532,8 +545,10 @@ fn answer_text(repo: &Repo, q0: &str, places: &[String], every: bool) -> bool {
     false
 }
 
+// @map map.ask.answer.call: the command reading a call's questions, each answered into its own part of the output, then fitted to the budget
 pub fn ask(args: &[String]) {
     let every = args.iter().any(|a| a == "--all");
+    let mut budget = cfg().answer;
     let mut questions: Vec<(String, Vec<String>)> = Vec::new();
     let mut waiting: Vec<String> = Vec::new();
     let mut i = 0;
@@ -544,6 +559,21 @@ pub fn ask(args: &[String]) {
                 questions.push((q, places.clone()));
             }
             i += 2;
+            continue;
+        }
+        if args[i] == "--budget" && i + 1 < args.len() && !args[i + 1].is_empty() && args[i + 1].chars().all(|c| c.is_ascii_digit()) {
+            budget = args[i + 1].parse().unwrap_or(usize::MAX);
+            i += 2;
+            continue;
+        }
+        if args[i] == "--json" {
+            set_json(true);
+            i += 1;
+            continue;
+        }
+        if args[i] == "--literal" || args[i] == "-F" {
+            set_literal(true);
+            i += 1;
             continue;
         }
         if args[i] != "--all" {
@@ -559,55 +589,116 @@ pub fn ask(args: &[String]) {
     }
     let repo = Repo::new(None);
     let ids: HashSet<&String> = repo.blocks.iter().map(|b| &b.id).collect();
-    let line_q = rx(r"^(.+?):(\d+)(?:-(\d+))?$");
+    flush();
+    let mut answers: Vec<(String, String)> = Vec::new();
+    let mut docs: Vec<Value> = Vec::new();
     for (q, places) in &questions {
+        let _ = take_rec();
+        answer(&repo, &ids, q, places, every);
+        let text = take_out();
+        if json_on() {
+            let mut doc = serde_json::Map::new();
+            doc.insert("question".into(), json!(q));
+            for k in ["blocks", "declarations", "files", "hits"] { doc.insert(k.into(), json!([])); }
+            for (k, v) in take_rec() { doc.insert(k, v); }
+            doc.insert("found".into(), json!(!text.contains("nothing in the code or the docs holds it")));
+            doc.insert("text".into(), json!(text));
+            docs.push(Value::Object(doc));
+        }
+        answers.push((q.clone(), text));
+    }
+    if json_on() {
+        print_json(&json!({"questions": docs}));
+        save_cache();
+        return;
+    }
+    for t in fit(&answers, budget) { crate::config::print_raw(&t); }
+    save_cache();
+}
+
+/// One question of a call, answered whole.
+fn answer(repo: &Repo, ids: &HashSet<&String>, q: &String, places: &[String], every: bool) {
+    let line_q = rx(r"^(.+?):(\d+)(?:-(\d+))?$");
+    {
         print(&format!("== {}", q));
+        if literal_on() {
+            if !answer_text(repo, q, places, every) {
+                print("  nothing in the code or the docs holds it");
+            }
+            return;
+        }
         if let Some(m) = line_q.captures(q) {
             if let Some(p) = relative(&m[1]).filter(|p| is_file(p)) {
                 let a: usize = m[2].parse().unwrap_or(1);
                 let b: Option<usize> = m.get(3).and_then(|x| x.as_str().parse().ok());
-                answer_lines(&repo, &p, a, b);
-                continue;
+                answer_lines(repo, &p, a, b);
+                return;
             }
         }
         if let Some(h) = q.find('#') {
             let (head, part) = (&q[..h], &q[h + 1..]);
             if !part.is_empty() && !head.is_empty() {
                 if let Some(p) = relative(head).filter(|p| is_file(p)) {
-                    if !answer_part(&repo, &p, part) {
+                    if !answer_part(repo, &p, part) {
                         print(&format!("  nothing in {} is called \"{}\"; its outline:", p, part));
-                        answer_file(&repo, &p);
+                        answer_file(repo, &p);
                     }
-                    continue;
+                    return;
                 }
             }
         }
         let p = relative(q);
         if let Some(p) = p.as_ref().filter(|p| is_file(p)) {
-            answer_file(&repo, p);
+            answer_file(repo, p);
         } else if let Some(p) = p.as_ref().filter(|p| is_dir(p)) {
-            answer_folder(&repo, p);
+            answer_folder(repo, p);
         } else if rx(r"[*?]").is_match(q) && q.contains('/') && !rx(r"[\\|()+^$]").is_match(q) {
             let pat = q.trim_start_matches(['.', '/']);
             let paths: Vec<String> = repo.files.iter().filter(|x| fnmatch(x, pat)).cloned().collect();
-            answer_files(&repo, &paths, q);
+            answer_files(repo, &paths, q);
         } else if !names_in(q).is_empty() {
             let ns = names_in(q);
             for name in &ns {
                 print(&if ns.len() > 1 { format!("  {}:", name) } else { format!("  the name {}", name) });
-                if !answer_name(&repo, name, places, every) {
+                if !answer_name(repo, name, places, every) {
                     print("  nothing in the code or the docs holds it");
                 }
             }
         } else if ids.contains(q) || ids.iter().any(|x| x.starts_with(&format!("{}.", q))) {
-            answer_block(&repo, q);
-        } else if (identifier(q) || word_rx().is_match(q)) && answer_name(&repo, q, places, every) {
-        } else if !answer_text(&repo, q, places, every) {
+            answer_block(repo, q);
+        } else if (identifier(q) || word_rx().is_match(q)) && answer_name(repo, q, places, every) {
+        } else if !answer_text(repo, q, places, every) {
             print("  nothing in the code or the docs holds it");
         }
     }
-    save_cache();
 }
+// @end map.ask.answer.call
+
+// @map map.ask.answer.fit: a call's answers kept within its budget of characters: the longest leave their code out, and say so
+const CODE_LEFT: &str = "  … ";
+
+/// A call's answers within its budget of characters: while they run over it, the longest answer (the first of equals) keeps its
+/// places and leaves out its lines of code, and says so. One question is always answered whole.
+fn fit(answers: &[(String, String)], budget: usize) -> Vec<String> {
+    let mut texts: Vec<String> = answers.iter().map(|(_, t)| t.clone()).collect();
+    let mut total: usize = texts.iter().map(|t| t.chars().count()).sum();
+    if budget == 0 || texts.len() < 2 { return texts; }
+    let mut order: Vec<usize> = (0..texts.len()).collect();
+    let lens: Vec<usize> = texts.iter().map(|t| t.chars().count()).collect();
+    order.sort_by_key(|&k| (std::cmp::Reverse(lens[k]), k));
+    let code = rx(r"^\d+\t");
+    for k in order {
+        if total <= budget { break; }
+        let lines: Vec<&str> = texts[k].trim_end_matches('\n').split('\n').collect();
+        let kept: Vec<&str> = lines.iter().copied().filter(|x| !code.is_match(x)).collect();
+        if kept.len() == lines.len() { continue; }
+        let short = format!("{}\n{}{} lines of code left out to keep this call under {} characters: ask {} in a call of its own\n", kept.join("\n"), CODE_LEFT, lines.len() - kept.len(), commas(budget), answers[k].0);
+        total = total + short.chars().count() - texts[k].chars().count();
+        texts[k] = short;
+    }
+    texts
+}
+// @end map.ask.answer.fit
 
 pub fn _keep(_: &OnceLock<u8>) {}
 // @end map.ask.answer

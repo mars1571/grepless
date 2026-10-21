@@ -115,7 +115,7 @@ the two agentmaps, nogrep, ctags, Doxygen and DeepWiki, with sources: [docs/COMP
 ## Four languages, one behaviour
 
 The tool exists in Python (the reference), Node, Go and Rust. The four write byte-identical maps and give the
-same 46 answers in the conformance suite (`tests/conformance.py`), and the same 12 on each agent's hook events, the
+same 66 answers in the conformance suite (`tests/conformance.py`), and the same 12 on each agent's hook events, the
 coach and the sessions measured; `bench/run.py` times them on a generated
 codebase of 400 files. Go and Rust answer a `brief` in about 0.1 s and run the hook in about 3 ms per tool call;
 Python and Node take about 0.3 s and 23 to 31 ms. Which to pick, and the numbers:

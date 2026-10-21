@@ -2,10 +2,14 @@
 package mapcore
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var STOP = set("a an and are as at be by can do does for from has have how i in into is it its me my new of on or our should so that the their them then there these this to us was we what when where which who why will with add change changes make fix use using want need needs")
@@ -133,9 +137,15 @@ func Ranked(blocks []*Block, g *Graph, words []string) []scored {
 	return out
 }
 
-func Brief(args []string) {
+// Brief prints the brief and returns its first round of questions; without strict, words that match nothing say so
+// and return none instead of ending the command.
+func Brief(args []string, strict bool) []string {
+	var docComponents, docAlso, docRecipes []any
 	words := WordsIn(args)
 	if len(words) == 0 {
+		if !strict {
+			return nil
+		}
 		Die("Say the task in a few words, as the code names things: brief cart totals discount")
 	}
 	blocks, _, untagged := Everything()
@@ -170,6 +180,10 @@ func Brief(args []string) {
 	order := append([]string{}, perOrder...)
 	sort.SliceStable(order, func(i, j int) bool { return score[order[i]] > score[order[j]] })
 	if len(order) == 0 {
+		if !strict {
+			Print("No block matches " + strings.Join(words, " ") + ".")
+			return nil
+		}
 		Die("No block matches those words. Try others, or " + CMD + " find <word>.")
 	}
 	var near []string
@@ -208,6 +222,7 @@ func Brief(args []string) {
 			}
 			best[x.b.ID].n++
 		}
+		partsJSON := []any{}
 		limit := 3
 		if ci < 2 {
 			limit = 5
@@ -226,6 +241,7 @@ func Brief(args []string) {
 				more = fmt.Sprintf(" (+%d files)", e.n-1)
 			}
 			Printf("  %s %s %s:%d-%d%s — %s", label, e.b.ID, e.b.Path, e.b.First, e.b.Last, more, Short(e.b.Purpose, 70))
+			partsJSON = append(partsJSON, Obj("id", e.b.ID, "file", e.b.Path, "first", e.b.First, "last", e.b.Last, "purpose", e.b.Purpose, "more_files", e.n-1))
 		}
 		decl := Unique(info.Declares)
 		if len(decl) > 0 {
@@ -290,11 +306,15 @@ func Brief(args []string) {
 			Print("  docs: " + strings.Join(docs, ", "))
 		}
 		log := Git(append([]string{"log", "-n", "2", "--format=%ad %h %s", "--date=short", "--"}, fs...)...)
+		var changed []string
 		for _, ln := range strings.Split(log, "\n") {
 			if strings.TrimSpace(ln) != "" {
 				Print("  changed " + Short(ln, 110))
+				changed = append(changed, ln)
 			}
 		}
+		docComponents = append(docComponents, Obj("name", c, "what", info.What, "files", Strs(fs), "parts", partsJSON, "declares", Strs(decl),
+			"needs", Strs(SortedKeys(info.Needs)), "needed_by", Strs(SortedKeys(info.By)), "tests", Strs(ts), "docs", Strs(SortedKeys(info.Docs)), "changed", Strs(changed)))
 	}
 	if len(also) > 0 {
 		Print("\nalso:")
@@ -303,18 +323,25 @@ func Brief(args []string) {
 		xs := append([]scored{}, per[c]...)
 		sort.SliceStable(xs, func(i, j int) bool { return xs[i].s > xs[j].s })
 		b := xs[0].b
+		docAlso = append(docAlso, Obj("component", c, "id", b.ID, "file", b.Path, "first", b.First, "last", b.Last, "purpose", b.Purpose, "tests", len(comps.M[c].Tests)))
 		Printf("%s  %s %s:%d-%d — %s; %d tests", c, b.ID, b.Path, b.First, b.Last, Short(b.Purpose, 70), len(comps.M[c].Tests))
 	}
 	var checks []string
+	var checksJSON []any
 	for _, h := range hits {
 		if IsTest(h.b.Path) && len(checks) < 3 {
 			checks = append(checks, fmt.Sprintf("%s %s:%d-%d", h.b.ID, h.b.Path, h.b.First, h.b.Last))
+			checksJSON = append(checksJSON, Obj("id", h.b.ID, "file", h.b.Path, "first", h.b.First, "last", h.b.Last))
 		}
+	}
+	if checksJSON == nil {
+		checksJSON = []any{}
 	}
 	if len(checks) > 0 {
 		Print("tests that say it: " + strings.Join(checks, "; "))
 	}
 	for _, r := range RecipesMatching(words) {
+		docRecipes = append(docRecipes, Obj("name", r[0], "about", r[1]))
 		Printf("recipe %s: %s (%s recipe %s)", r[0], r[1], CMD, r[0])
 	}
 	if len(untagged) > 0 {
@@ -334,7 +361,22 @@ func Brief(args []string) {
 		Print("Next, one call for the whole first round (add every other question to it): " + CMD + " ask " + strings.Join(first, " "))
 	}
 	Print("End each change with: " + CMD + " check")
+	if JSONMode {
+		briefDoc = Obj("words", Strs(words), "matching", len(near), "total", len(order), "components", orEmpty(docComponents), "also", orEmpty(docAlso),
+			"tests_that_say_it", checksJSON, "recipes", orEmpty(docRecipes), "untagged_files", len(untagged), "first_round", Strs(first), "check", CMD+" check")
+	}
 	SaveCache()
+	return first
+}
+
+// briefDoc is the brief's JSON document, built beside its text (only with --json).
+var briefDoc *OMap
+
+func orEmpty(xs []any) []any {
+	if xs == nil {
+		return []any{}
+	}
+	return xs
 }
 
 func topN(xs []string, n int) string {
@@ -351,3 +393,67 @@ func topN(xs []string, n int) string {
 }
 
 // @end map.brief.print
+
+// @map map.brief.pack: where a task starts, in one call: a recipe's steps and the brief of the task's words, then that first round answered within the budget
+// Pack: pack <recipe> [words…] | pack <words…> [--budget N]: the recipe's steps (when the first word names one) and
+// the brief of the other words, then their blocks and files asked in one round, as Ask answers it.
+func Pack(args []string) {
+	var words, budget []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--budget" && i+1 < len(args) {
+			budget = args[i : i+2]
+			i++
+			continue
+		}
+		words = append(words, args[i])
+	}
+	var first []string
+	saved := out
+	var buf bytes.Buffer
+	out = bufio.NewWriterSize(&buf, 1<<16)
+	if _, ok := CFG.Recipes.Vals[firstWord(words)].(*OMap); ok && len(words) > 0 {
+		Recipe(words[0])
+		for _, step := range recipeSteps(CFG.Recipes.Vals[words[0]].(*OMap)) {
+			first = append(first, step[0])
+		}
+		words = words[1:]
+		if len(words) > 0 {
+			Print("")
+		}
+	}
+	if len(words) > 0 || len(first) == 0 {
+		first = append(first, Brief(words, len(first) == 0)...)
+	}
+	first = Unique(first)
+	if len(first) > 0 {
+		Print("\nThe first round, answered (" + CMD + " ask " + strings.Join(first, " ") + "):")
+	}
+	out.Flush()
+	out = saved
+	text := buf.String()
+	out.WriteString(text)
+	out.Flush()
+	if len(first) > 0 {
+		limit := CFG.Limits["answer"]
+		if len(budget) > 0 && allDigits(budget[1]) {
+			limit, _ = strconv.Atoi(budget[1])
+		}
+		left := 0
+		if limit > 0 {
+			left = limit - utf8.RuneCountInString(text)
+			if left < 1 {
+				left = 1
+			}
+		}
+		Ask(append(first, "--budget", strconv.Itoa(left)))
+	}
+}
+
+func firstWord(words []string) string {
+	if len(words) > 0 {
+		return words[0]
+	}
+	return ""
+}
+
+// @end map.brief.pack

@@ -21,6 +21,37 @@
 (nothing printed: the call goes ahead)
 == not code: cat LICENSE /tmp/map-demo.log (rc=0)
 (nothing printed: the call goes ahead)
+== reads: ls src/web; tail -3 src/shop/prices.py | cut -c1-20 (rc=0)
+{
+ "permissionDecision": "deny",
+ "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/web; <map> ask src/shop/prices.py:28-30 | cut -c1-20"
+}
+== mixed: grep -rn coupon src; python3 -m unittest (rc=0)
+{
+ "permissionDecision": "deny",
+ "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  <map> ask coupon --in src; python3 -m unittest"
+}
+== check an edit: sed -i 's/TEN/10/' src/shop/prices.py && tail -3 src/shop/prices.py (rc=0)
+(nothing printed: the call goes ahead)
+== count lines: grep -rn coupon src | wc -l (rc=0)
+(nothing printed: the call goes ahead)
+== mixed line: git status -s; grep -rn coupon src 2>/dev/null | head -3; cargo test (rc=0)
+{
+ "permissionDecision": "deny",
+ "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  git status -s; <map> ask coupon --in src | head -3; cargo test"
+}
+== read-only steps: which python3; sed -n 1,5p src/shop/cart.py; pwd (rc=0)
+{
+ "permissionDecision": "deny",
+ "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  which python3; <map> ask src/shop/cart.py:1-5; pwd"
+}
+== count with grep: grep -rn coupon src | grep -ic money (rc=0)
+(nothing printed: the call goes ahead)
+== cut a file: cut -c1-20 src/shop/cart.py (rc=0)
+{
+ "permissionDecision": "deny",
+ "permissionDecisionReason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send its other steps again. Run instead:\n  <map> ask src/shop/cart.py | cut -c1-20"
+}
 == view code (rc=0)
 {
  "permissionDecision": "deny",

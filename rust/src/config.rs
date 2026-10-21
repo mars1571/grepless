@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 pub const VERSION: &str = "1.0.0";
@@ -23,6 +24,7 @@ pub struct Config {
     pub forms: HashMap<String, String>,
     pub untagged: usize,
     pub block: usize,
+    pub answer: usize,
     pub tests: Vec<String>,
     pub recipes: Map<String, Value>,
     pub strict: bool,
@@ -37,16 +39,44 @@ pub struct State {
 static STATE: OnceLock<State> = OnceLock::new();
 static OUT: Mutex<String> = Mutex::new(String::new());
 
+static JSON: AtomicBool = AtomicBool::new(false);
+static LITERAL: AtomicBool = AtomicBool::new(false);
+static REC: Mutex<Option<Map<String, Value>>> = Mutex::new(None);
+
 pub fn st() -> &'static State { STATE.get().expect("setup") }
 pub fn root() -> &'static Path { &st().root }
 pub fn cfg() -> &'static Config { &st().cfg }
 pub fn cmd() -> &'static str { &cfg().command }
+
+/// `--json`: the commands that support it answer with one JSON document instead of the human text.
+pub fn json_on() -> bool { JSON.load(Ordering::Relaxed) }
+pub fn set_json(on: bool) { JSON.store(on, Ordering::Relaxed); }
+/// `--literal` / `-F`: ask searches its text as it is, with no regex and no reading of it as a name.
+pub fn literal_on() -> bool { LITERAL.load(Ordering::Relaxed) }
+pub fn set_literal(on: bool) { LITERAL.store(on, Ordering::Relaxed); }
+/// Records a structured fact of the answer being built (only with `--json`) under `kind`.
+pub fn rec(kind: &str, v: Value) {
+    if !json_on() { return; }
+    let mut r = REC.lock().unwrap();
+    let m = r.get_or_insert_with(Map::new);
+    if let Value::Array(a) = m.entry(kind.to_string()).or_insert_with(|| Value::Array(vec![])) { a.push(v); }
+}
+/// Takes the facts recorded so far (one question's), leaving none.
+pub fn take_rec() -> Map<String, Value> { REC.lock().unwrap().take().unwrap_or_default() }
+/// Prints one JSON document on stdout, in place of whatever was printed.
+pub fn print_json(v: &Value) {
+    let _ = take_out();
+    print(&serde_json::to_string(v).unwrap_or_default());
+}
 
 pub fn print(s: &str) {
     let mut o = OUT.lock().unwrap();
     o.push_str(s);
     o.push('\n');
 }
+/// Takes what has been printed so far, leaving the buffer empty (one question's answer, apart from the others).
+pub fn take_out() -> String { std::mem::take(&mut *OUT.lock().unwrap()) }
+pub fn print_raw(s: &str) { OUT.lock().unwrap().push_str(s); }
 pub fn flush() {
     let mut o = OUT.lock().unwrap();
     if !o.is_empty() {
@@ -415,7 +445,7 @@ pub fn setup(mut argv: Vec<String>) -> Vec<String> {
         command: "python3 tools/map.py".into(), name: String::new(),
         roots: "src lib app apps packages pkg internal cmd services".split(' ').map(String::from).collect(),
         areas: IndexMap::new(), holds: IndexMap::new(), describe: Vec::new(), ignore: Vec::new(), forms: HashMap::new(),
-        untagged: 30, block: 16000, tests: Vec::new(), recipes: Map::new(), strict: false, guard_skip: Vec::new(),
+        untagged: 30, block: 16000, answer: 28000, tests: Vec::new(), recipes: Map::new(), strict: false, guard_skip: Vec::new(),
     };
     if let Ok(text) = std::fs::read_to_string(root.join("map.json")) {
         let given: Value = match serde_json::from_str(&text) {
@@ -447,6 +477,7 @@ pub fn setup(mut argv: Vec<String>) -> Vec<String> {
                     "limits" => if let Some(m) = v.as_object() {
                         if let Some(n) = m.get("untagged").and_then(|x| x.as_u64()) { cfg.untagged = n as usize; }
                         if let Some(n) = m.get("block").and_then(|x| x.as_u64()) { cfg.block = n as usize; }
+                        if let Some(n) = m.get("answer").and_then(|x| x.as_u64()) { cfg.answer = n as usize; }
                     },
                     "tests" => cfg.tests = strs(Some(v)),
                     "recipes" => if let Some(m) = v.as_object() { cfg.recipes = m.clone(); },

@@ -71,6 +71,29 @@ class Example(unittest.TestCase):
             path.write_text(text)
         out, rc, _ = run(self.root, 'check')
         self.assertEqual(rc, 0, out)
+
+    def test_a_rust_inner_attribute_is_not_a_shebang(self):
+        rust = self.root / 'src' / 'shop' / 'lints.rs'
+        script = self.root / 'src' / 'shop' / 'tool.py'
+        rust.write_text('// @map shop.lints.allow: the lints the example allows, an inner attribute below the tag\n'
+                        '#![allow(dead_code)]\nfn unused() {}\n')
+        try:
+            run(self.root, 'build')
+            out, rc, _ = run(self.root, 'check')
+            self.assertEqual(rc, 0, out)                                                              # #![ is no shebang
+            script.write_text('# @map shop.tool.run: a script whose shebang line was pushed below its tag\n'
+                              '#!/usr/bin/env python3\nprint(1)\n')
+            run(self.root, 'build')
+            out, rc, _ = run(self.root, 'check')
+            self.assertEqual(rc, 1, out)
+            self.assertIn('tool.py:2: the #! line must stay the first line', out)
+            self.assertIn(', 1 problems', out)
+        finally:
+            rust.unlink(missing_ok=True)
+            script.unlink(missing_ok=True)
+            run(self.root, 'build')
+        out, rc, _ = run(self.root, 'check')
+        self.assertEqual(rc, 0, out)
 # @end tests.map.build
 
 # @map tests.map.ask: ask answers a round of questions in one call: a block, a name with its code, a file, a glob, a section, a folder, lines, text
@@ -111,6 +134,42 @@ class Example(unittest.TestCase):
         finally:
             extra.unlink()
             run(self.root, 'build')
+
+    def test_ask_literal_searches_the_text_as_it_is(self):
+        out, rc, _ = run(self.root, 'ask', '--literal', 'total(', 'a|b', 'function render', 'cart.lines')
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('the name', out)                                                           # `total(` and `function render` are not names
+        self.assertRegex(out, r'== total\(\n  shop\.cart\.totals  src/shop/cart\.py:24-38')
+        self.assertIn('== a|b\n  nothing in the code or the docs holds it', out)                    # not the alternation a or b
+        self.assertIn('== function render\n  web.cart.render  src/web/cart.js:1-14', out)
+        self.assertRegex(out, r'== cart\.lines\n  shop\.cart\.totals')
+        self.assertNotIn('cartXlines', out)                                                         # the dot is a dot, not any character
+        out, _, _ = run(self.root, 'ask', '-F', 'shop.cart.totals')
+        self.assertIn('  docs/CART.md:1-16  # The cart', out)                                       # a block id is text too: the lines naming it
+        self.assertNotIn('29\tdef total(cart):', out)                                                # not the block's code
+        plain, _, _ = run(self.root, 'ask', 'shop.cart.totals')
+        self.assertIn('29\tdef total(cart):', plain)                                                # without the flag, as before
+
+    def test_ask_json_has_the_blocks_declarations_files_and_hits(self):
+        out, rc, _ = run(self.root, 'ask', '--json', 'shop.cart.totals', 'total', 'src/web/*.js', 'coupon', '--in', 'src/web')
+        self.assertEqual(rc, 0, out)
+        doc = json.loads(out)
+        first, name, glob, text = doc['questions']
+        self.assertEqual(first['question'], 'shop.cart.totals')
+        self.assertEqual(first['blocks'][0]['id'], 'shop.cart.totals')
+        self.assertEqual((first['blocks'][0]['file'], first['blocks'][0]['first'], first['blocks'][0]['last']), ('src/shop/cart.py', 24, 38))
+        self.assertIn('24\t# @map shop.cart.totals', first['text'])                                 # the human answer rides along
+        self.assertEqual((name['declarations'][0]['file'], name['declarations'][0]['first']), ('src/shop/cart.py', 29))
+        self.assertTrue(name['hits'] and all({'file', 'line', 'text', 'block'} <= set(h) for h in name['hits']))
+        self.assertEqual([f['file'] for f in glob['files']], ['src/web/cart.js', 'src/web/format.js'])
+        self.assertTrue(text['found'] and all(h['file'].startswith('src/web/') for h in text['hits']))     # --in narrows it
+        self.assertEqual(json.loads(run(self.root, 'ask', '--json', 'nothing-here-xyz')[0])['questions'][0]['found'], False)
+
+    def test_without_the_flags_the_text_is_the_same(self):
+        for args in (('ask', 'shop.cart.totals', 'total', 'coupon'), ('brief', 'cart', 'coupon'), ('find', 'discount')):
+            out, rc, _ = run(self.root, *args)
+            self.assertEqual(rc, 0, out)
+            self.assertFalse(out.lstrip().startswith('{"'), out)
 # @end tests.map.ask
 
 # @map tests.map.brief: brief ranks the components a task's words name and ends with the first round of questions; find, recipe, deps, impact, tests
@@ -127,6 +186,24 @@ class Example(unittest.TestCase):
         self.assertIn('changed 20', out)                                                             # the commit of the scratch repository
         self.assertIn('recipe new-discount: a new kind of discount', out)
         self.assertRegex(out, r'Next, one call for the whole first round \(add every other question to it\): python3 \S+map\.py ask shop\.prices\.discounts')
+
+    def test_brief_and_find_json(self):
+        out, rc, _ = run(self.root, 'brief', '--json', 'cart', 'discount', 'coupon')
+        self.assertEqual(rc, 0, out)
+        doc = json.loads(out)
+        self.assertEqual((doc['words'], doc['matching'], doc['total']), (['cart', 'discount', 'coupon'], 3, 3))
+        cart = doc['components'][0]
+        self.assertEqual(cart['name'], 'shop.cart')
+        self.assertEqual(cart['parts'][0]['id'], 'shop.cart.totals')
+        self.assertEqual((cart['parts'][0]['file'], cart['parts'][0]['first'], cart['parts'][0]['last']), ('src/shop/cart.py', 24, 38))
+        self.assertEqual(cart['declares'][:3], ['Cart', '__init__', 'add'])
+        self.assertEqual((cart['needs'], cart['needed_by'], cart['tests']), (['shop.prices'], ['tests.cart'], ['tests/test_cart.py']))
+        self.assertIn('new-discount', [r['name'] for r in doc['recipes']])
+        self.assertTrue(doc['first_round'][0].startswith('shop.'))
+        out, rc, _ = run(self.root, 'find', '--json', 'discount')
+        found = json.loads(out)
+        self.assertEqual(found['blocks'][0]['id'], 'shop.prices.discounts')
+        self.assertEqual((found['declarations'], found['more']), ([], 0))
 
     def test_find_recipe_deps_impact_tests(self):
         out, _, _ = run(self.root, 'find', 'discount')

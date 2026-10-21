@@ -39,7 +39,8 @@ def line_discount(code, quantity):
 - **Sizes**: a block holds at most 16,000 characters of its own code (about 4,000 tokens: readable in one answer);
   split a larger one with blocks inside it. A tagged file may have at most 30 non-blank lines outside any block
   (imports, constants). `python3 tools/map.py gaps` lists what breaks these, and `check` fails on them.
-- **A shebang** stays the first line; the tag goes below it.
+- **A shebang** stays the first line; the tag goes below it. A Rust inner attribute (`#![…]`) is no shebang: it
+  goes below the tag like any other line.
 
 Tags never reach a build: a build that strips tag lines (`map.py` has `strip(text, path)` for that) produces a
 byte-identical output, which is how the first tagged codebase proved tagging changed nothing.

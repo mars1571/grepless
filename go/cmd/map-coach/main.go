@@ -178,8 +178,8 @@ func main() {
 		return
 	}
 	var data map[string]any
-	if json.Unmarshal(input, &data) != nil || data == nil || truthy(data["agent_id"]) {
-		return // a subagent's calls are its own business
+	if json.Unmarshal(input, &data) != nil || data == nil {
+		return
 	}
 	if agent == "" {
 		agent = detect(data)
@@ -206,7 +206,17 @@ func main() {
 	if len(name) > 64 {
 		name = name[:64]
 	}
-	file := filepath.Join(dir, name+".json")
+	sub := ""
+	if truthy(data["agent_id"]) {
+		sub = nonWord.ReplaceAllString(str(data["agent_id"]), "") // a subagent counts its own reads
+		if len(sub) > 32 {
+			sub = sub[:32]
+		}
+		if sub != "" {
+			sub = "-" + sub
+		}
+	}
+	file := filepath.Join(dir, name+sub+".json")
 	state := map[string]any{}
 	if b, err := os.ReadFile(file); err == nil {
 		json.Unmarshal(b, &state)

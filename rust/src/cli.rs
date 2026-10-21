@@ -1,6 +1,6 @@
 // @map map.cli.init: init: the areas detected, map.json written, the section for AGENTS.md printed; and the command line
 use crate::ask::ask;
-use crate::brief::brief;
+use crate::brief::{brief, pack};
 use crate::config::*;
 use crate::files::*;
 use crate::parse::{facts, save_cache, Problem};
@@ -31,7 +31,7 @@ whole conversation, so questions go in rounds: every question of a round in one 
    with a script that only prints them, or with a file-reading tool on whole files**: `ask` answers the same
    question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a
    range of lines before an edit.
-4. **Tag what you add or move** (`docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
+4. **Tag what you add or move** (`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
    `@end <id>` when other code follows it; keep purposes true. **End each change with `{cmd} check`**, which also
    checks that the map is current (`{cmd} build` writes it again).
 ";
@@ -44,7 +44,8 @@ in the code; what agents ask it instead of grepping. Start a task with brief, re
     {cmd} brief <words>    where a task starts: the components the words name, their blocks and lines, what
                                 they declare, need and are needed by, their tests, docs and latest commits, then
                                 the first round of questions to ask, in one call
-    {cmd} ask <question> [<question> …] [--in <paths>] [--all]
+    {cmd} pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered, in one call
+    {cmd} ask <question> [<question> …] [--in <paths>] [--all] [--budget N]
                                 the one way to read and locate: every question of a round in one call, each
                                 answered whole: a block id (its code), an identifier (what it is, the code declaring
                                 it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,
@@ -107,7 +108,7 @@ pub fn init(args: &[String]) {
     print(&format!("Areas (code files each): {}", counts.iter().map(|(a, n)| format!("{} {}", a, n)).collect::<Vec<_>>().join(", ")));
     print(&format!("{} code files, {} tagged, {} without tags yet.", files().len(), files().len() - untagged.len(), untagged.len()));
     print("");
-    print(&format!("Next: 1. tag the code (docs/TAGGING.md; {} gaps lists what is left), 2. {} build, 3. paste this in AGENTS.md", cmd(), cmd()));
+    print(&format!("Next: 1. tag the code (https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md; {} gaps lists what is left), 2. {} build, 3. paste this in AGENTS.md", cmd(), cmd()));
     print(&format!("(CLAUDE.md imports it with a line \"@AGENTS.md\"), 4. install the guard: {} install <agent>.", guard_command()));
     print("");
     print(&AGENTS_SECTION.replace("{cmd}", cmd()));
@@ -125,13 +126,29 @@ pub fn main(argv: Vec<String>) {
     let argv = setup(argv);
     let (command, rest): (String, Vec<String>) = if argv.is_empty() { ("check".into(), vec![]) } else { (argv[0].clone(), argv[1..].to_vec()) };
     match command.as_str() {
-        "find" if !rest.is_empty() => find(&rest),
+        "find" | "brief" if rest.iter().any(|a| a == "--json") => {
+            set_json(true);
+            let rest: Vec<String> = rest.into_iter().filter(|a| a != "--json").collect();
+            if rest.is_empty() { die(&usage()); }
+            if command == "find" {
+                let more = find(&rest);
+                let mut doc = Map::new();
+                for k in ["declarations", "blocks"] { doc.insert(k.into(), json!([])); }
+                for (k, v) in take_rec() { doc.insert(k, v); }
+                doc.insert("more".into(), json!(more));
+                print_json(&Value::Object(doc));
+            } else {
+                brief(&rest, true);
+            }
+        }
+        "find" if !rest.is_empty() => { find(&rest); }
         "deps" if rest.len() == 1 => deps(&rest[0]),
         "impact" if rest.len() == 1 => impact(&rest[0]),
         "history" if rest.len() == 1 => history(&rest[0]),
         "where" if rest.len() == 1 => where_cmd(&rest[0]),
         "ask" if !rest.is_empty() => ask(&rest),
-        "brief" if !rest.is_empty() => brief(&rest),
+        "brief" if !rest.is_empty() => { brief(&rest, true); }
+        "pack" if !rest.is_empty() => pack(&rest),
         "tests" => tests(&rest),
         "recipe" if rest.len() <= 1 => recipe(rest.first().map(|s| s.as_str()).unwrap_or("")),
         "plan" if rest.len() == 1 => plan(&rest[0]),

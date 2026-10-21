@@ -14,7 +14,7 @@ const VERSION = '1.0.0';
 const CONFIG = {
   command: 'python3 tools/map.py', name: '',
   roots: ['src', 'lib', 'app', 'apps', 'packages', 'pkg', 'internal', 'cmd', 'services'],
-  areas: {}, holds: {}, describe: [], ignore: [], forms: {}, limits: { untagged: 30, block: 16000 }, tests: [], recipes: {},
+  areas: {}, holds: {}, describe: [], ignore: [], forms: {}, limits: { untagged: 30, block: 16000, answer: 28000 }, tests: [], recipes: {},
   strict: false, guard: { skip: [] },
 };
 const FORMS = { slash: [['/*', '*/'], ['//', '']], hash: [['#', '']], html: [['<!--', '-->'], ['/*', '*/'], ['//', '']],
@@ -284,7 +284,7 @@ function parse(p, text) {
     const m = tagMatch(tag, line);
     if (!m) {
       if (looks.test(line)) problems.push([n, 'a tag that cannot be read: "@map <id>: <purpose>" or "@end <id>", alone on its line']);
-      else if (line.startsWith('#!') && n > 1) problems.push([n, 'the #! line must stay the first line: put the tag below it']);
+      else if (line.startsWith('#!') && !line.startsWith('#![') && n > 1) problems.push([n, 'the #! line must stay the first line: put the tag below it']);
       return;
     }
     const [kind, id, purpose] = m;
@@ -729,7 +729,7 @@ function find(words0) {
   let said = false;
   if (raw.length === 1 || raw.some(identifier)) {
     const repo = new Repo(blocks);
-    for (const w of raw) if (raw.length === 1 || identifier(w)) for (const d of declarations(repo, w.replace(/^[#.]+/, '')).slice(0, 5)) { print(`${w}: ${d[3]}, declared in ${repo.where(d[0], d[1]) || d[0]}  ${d[0]}:${d[1]}-${d[2]}`); said = true; }
+    for (const w of raw) if (raw.length === 1 || identifier(w)) for (const d of declarations(repo, w.replace(/^[#.]+/, '')).slice(0, 5)) { rec('declarations', { name: w, what: d[3], in: repo.where(d[0], d[1]) || d[0], file: d[0], first: d[1], last: d[2] }); print(`${w}: ${d[3]}, declared in ${repo.where(d[0], d[1]) || d[0]}  ${d[0]}:${d[1]}-${d[2]}`); said = true; }
   }
   const has = (text, w) => lowerWords(text).some(h => h.startsWith(w));
   const hit = b => words.every(w => has(b.id + ' ' + b.purpose + ' ' + b.path, w));
@@ -737,10 +737,12 @@ function find(words0) {
   if (said && raw.length === 1) hits = hits.filter(b => has(b.id, words[0]));
   for (const b of hits.slice(0, SHOWN)) {
     const purpose = b.purpose.length <= 120 ? b.purpose : b.purpose.slice(0, b.purpose.lastIndexOf(' ', 118)) + '…';
+    rec('blocks', { id: b.id, file: b.path, first: b.first, last: b.last, lines: b.lines, purpose: b.purpose });
     print(`${padR(b.id, 44)} ${b.path}:${b.first}-${b.last} (${b.lines} lines)  ${purpose}`);
   }
   if (hits.length > SHOWN) print(`… ${hits.length - SHOWN} more: add a word to narrow them`);
   if (!hits.length && !said) print(`No block matches. Try fewer words, or the code's text: ${CMD} ask '<text>'`);
+  return Math.max(0, hits.length - SHOWN);
 }
 const matching = (id, blocks) => blocks.filter(b => b.id === id || b.id.startsWith(id + '.'));
 function where(id) {
@@ -769,7 +771,7 @@ function gaps(paths) {
     }
   }
   saveCache();
-  if (untagged) print(`${untagged} of ${chosen.length} files carry no tag: docs/TAGGING.md says how to tag them with an agent`);
+  if (untagged) print(`${untagged} of ${chosen.length} files carry no tag: https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md says how to tag them with an agent`);
   else if (!printed) print(`All ${chosen.length} code files are tagged, no block to split, no problem.`);
 }
 function git(...args) { try { return spawnSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 26 }).stdout || ''; } catch { return ''; } }
@@ -917,6 +919,12 @@ function declarations(repo, word) {
 // @end map.ask.repo
 
 // @map map.ask.answer: each kind of question answered whole, and the command reading a call's questions
+const FLAGS = { json: false, literal: false };   // --json: one JSON document instead of the text; --literal: ask searches its text as it is
+let REC = {};                                      // the structured facts of the answer being built (only with --json)
+const rec = (kind, value) => { if (FLAGS.json) (REC[kind] || (REC[kind] = [])).push(value); };
+const BRIEF_JSON = [];                             // the brief's document, built beside its text
+const blockJson = b => ({ id: b.id, file: b.path, first: b.first, last: b.last, purpose: b.purpose });
+const printJson = doc => print(JSON.stringify(doc));
 function search(repo, rx, places, skip = []) {
   const hits = [], whole = new RegExp(rx.source, rx.flags.includes('m') ? rx.flags : rx.flags + 'm');
   for (const p of repo.files) {
@@ -941,6 +949,7 @@ function showHits(repo, hits, every, numbers = false) {
   const places = new Map();
   for (const [p, i, line] of hits) {
     const b = repo.holder(p, i); let key, label;
+    rec('hits', { file: p, line: i, text: line, block: b ? b.id : null });
     if (b) { key = `${p}\u0000${b.id}\u0000${b.first}`; label = `${b.id}  ${p}:${b.first}-${b.last}  ${short(b.purpose)}`; }
     else { const s = DOCS.has(suffixOf(p).toLowerCase()) ? repo.section(p, i) : null; if (s) { key = `${p}\u0000${s[0]}`; label = `${p}:${s[0]}-${s[1]}  ${'#'.repeat(s[2])} ${s[3]}`; } else { key = p; label = p; } }
     if (!places.has(key)) places.set(key, [label, []]);
@@ -959,12 +968,14 @@ function showHits(repo, hits, every, numbers = false) {
   }
 }
 function answerLines(repo, p, a, b) {
-  const lines = repo.lines(p); let label;
+  const lines = repo.lines(p), a0 = a, b0 = b; let label;
   if (b === null) {
     const h = repo.holder(p, a), s = DOCS.has(suffixOf(p).toLowerCase()) ? repo.section(p, a) : null;
     if (h) { a = h.first; b = h.last; label = `${h.id}: ${h.purpose}`; } else if (s) { a = s[0]; b = s[1]; label = `${'#'.repeat(s[2])} ${s[3]}`; } else { b = a + 15; a = Math.max(1, a - 15); label = ''; }
   } else label = repo.where(p, a, b);
+  const held = b0 === null ? repo.holder(p, a0) : null;
   a = Math.max(1, a); b = Math.min(lines.length, b);
+  if (held) rec('blocks', blockJson(held));
   print(`  ${p}:${a}-${b}` + (label ? `  ${label}` : ''));
   put(lines, a, b);
 }
@@ -993,6 +1004,7 @@ function answerFile(repo, p) {
     for (const b of sortedBy(repo.byFile.get(p), b => [b.first, -b.last])) {
       while (outer.length && outer[outer.length - 1] < b.first) outer.pop();
       const ns = named.get(b.id) || [];
+      rec('blocks', blockJson(b));
       print(`${padL(b.first, 6)}-${padR(b.last, 6)}${'  '.repeat(outer.length)}${b.id}  ${short(b.purpose)}` + (ns.length ? `  [${ns.slice(0, 8).join(', ')}${ns.length > 8 ? ' …' : ''}]` : ''));
       outer.push(b.last);
     }
@@ -1010,6 +1022,7 @@ function answerFiles(repo, paths, about) {
     const bs = repo.byFile.get(p) || []; const first = bs.length ? bs.reduce((a, b) => (b.first < a.first ? b : a)) : null;
     const heads = DOCS.has(suffixOf(p).toLowerCase()) ? repo.sections(p) : [];
     const what = first ? short(first.purpose, 90) : (heads.length ? heads[0][3] : '');
+    rec('files', { file: p, lines: repo.lines(p).length, what });
     print(`    ${p}  (${repo.lines(p).length} lines)  ${what}`);
   }
 }
@@ -1037,7 +1050,7 @@ function answerPart(repo, p, words) {
     return found.length > 0;
   }
   const found = (repo.byFile.get(p) || []).filter(b => has(b.id + ' ' + b.purpose));
-  for (const b of found) { print(`  ${p}:${b.first}-${b.last}  ${b.id}: ${b.purpose}`); put(repo.lines(p), b.first, b.last); }
+  for (const b of found) { rec('blocks', blockJson(b)); print(`  ${p}:${b.first}-${b.last}  ${b.id}: ${b.purpose}`); put(repo.lines(p), b.first, b.last); }
   return found.length > 0;
 }
 function answerBlock(repo, q) {
@@ -1045,15 +1058,16 @@ function answerBlock(repo, q) {
   if (exact.length) {
     for (const b of exact) {
       const nested = repo.byFile.get(b.path).filter(x => x !== b && b.first <= x.first && x.last <= b.last);
+      rec('blocks', blockJson(b));
       print(`  ${b.path}:${b.first}-${b.last}  ${b.id}: ${b.purpose}`);
       if (b.last - b.first + 1 > SMALL && nested.length) {
         print(`  ${b.last - b.first + 1} lines; the blocks inside it (one: ask <id>, or ${b.path}:<first>-<last>)`);
-        for (const x of nested) print(`${padL(x.first, 6)}-${padR(x.last, 6)}${x.id}  ${short(x.purpose)}`);
+        for (const x of nested) rec('blocks', blockJson(x)), print(`${padL(x.first, 6)}-${padR(x.last, 6)}${x.id}  ${short(x.purpose)}`);
       } else put(repo.lines(b.path), b.first, b.last);
     }
   } else if (inside.length <= 60) {
     print(`  ${inside.length} blocks under ${q} (one: ask <id>)`);
-    for (const b of inside) print(`    ${padR(b.id, 44)} ${b.path}:${b.first}-${b.last}  ${short(b.purpose)}`);
+    for (const b of inside) rec('blocks', blockJson(b)), print(`    ${padR(b.id, 44)} ${b.path}:${b.first}-${b.last}  ${short(b.purpose)}`);
   } else {
     const parts = new Map();
     for (const b of inside) { const k = b.id.split('.').slice(0, q.split('.').length + 1).join('.'); if (!parts.has(k)) parts.set(k, []); parts.get(k).push(b); }
@@ -1066,6 +1080,7 @@ function answerName(repo, q, places, every) {
   const decls = /^[A-Za-z_$][\w$]*$/.test(word) ? declarations(repo, word) : [];
   if (decls.length > 3) print(`  declared in ${decls.length} places (the code of one: ask <file>:<first>-<last>)`);
   for (const [p, first, last, what] of decls) {
+    rec('declarations', { what, file: p, first, last });
     print(`  ${what}: ${p}:${first}-${last}  in ${repo.where(p, first) || p}`);
     if (decls.length <= 3 && last - first < LONG) put(repo.lines(p), first, last);
     else if (decls.length <= 3) { put(repo.lines(p), first, first + 11); print(`  … ${last - first - 11} more lines: ask ${p}:${first + 12}-${last}`); }
@@ -1083,32 +1098,52 @@ function namesIn(q) {
 }
 const unescapedPipe = q => [...q].some((c, i) => c === '|' && (i === 0 || q[i - 1] !== '\\'));
 function answerText(repo, q, places, every) {
-  if (q.includes('\\|') && !unescapedPipe(q)) q = q.split('\\|').join('|');
-  let rx; try { rx = new RegExp(q); } catch { rx = new RegExp(escapeRe(q)); }
+  const literal = FLAGS.literal;
+  if (!literal && q.includes('\\|') && !unescapedPipe(q)) q = q.split('\\|').join('|');
+  let rx; try { rx = new RegExp(literal ? escapeRe(q) : q); } catch { rx = new RegExp(escapeRe(q)); }
   const hits = search(repo, rx, places);
   if (hits.length) { showHits(repo, hits, every); return true; }
-  if (q.trim().includes(' ')) { print('  no line holds it; the blocks whose id, purpose or file have these words:'); find(splitWs(q)); return true; }
+  if (!literal && q.trim().includes(' ')) { print('  no line holds it; the blocks whose id, purpose or file have these words:'); find(splitWs(q)); return true; }
   return false;
 }
 function ask(args) {
   const every = args.includes('--all');
-  const questions = []; let waiting = [];
+  const questions = []; let waiting = [], budget = CFG.limits.answer ?? 28000;
   for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--budget' && i + 1 < args.length && /^[0-9]+$/.test(args[i + 1])) { budget = Number(args[i + 1]); i++; continue; }
     if (args[i] === '--in' && i + 1 < args.length) { const places = args[i + 1].split(',').filter(x => x).map(x => relative(x) || x.replace(/^[./]+/, '')); for (const q of waiting) questions.push([q, places]); waiting = []; i++; continue; }
+    if (args[i] === '--json') { FLAGS.json = true; continue; }
+    if (args[i] === '--literal' || args[i] === '-F') { FLAGS.literal = true; continue; }
     if (args[i] !== '--all') waiting.push(args[i]);
   }
   for (const q of waiting) questions.push([q, []]);
   if (!questions.length) die(USAGE);
   const repo = new Repo();
   const ids = new Set(repo.blocks.map(b => b.id));
+  const answers = [], docs = [];
   for (const [q, places] of questions) {
+    const start = OUT.length;
+    REC = {};
+    answer(repo, ids, q, places, every);
+    const text = OUT.splice(start).map(x => x + '\n').join('');
+    answers.push([q, text]);
+    if (FLAGS.json) docs.push({ question: q, blocks: [], declarations: [], files: [], hits: [], ...REC, found: !text.includes('nothing in the code or the docs holds it'), text });
+  }
+  if (FLAGS.json) { printJson({ questions: docs }); saveCache(); return; }
+  const text = fit(answers, budget).join('');
+  if (text) print(text.replace(/\n$/, ''));
+  saveCache();
+}
+function answer(repo, ids, q, places, every) {
+  {
     print(`== ${q}`);
+    if (FLAGS.literal) { if (!answerText(repo, q, places, every)) print('  nothing in the code or the docs holds it'); return; }
     const m = /^(.+?):(\d+)(?:-(\d+))?$/.exec(q);
     let p = m ? relative(m[1]) : null;
-    if (p && isFile(p)) { answerLines(repo, p, Number(m[2]), m[3] ? Number(m[3]) : null); continue; }
+    if (p && isFile(p)) { answerLines(repo, p, Number(m[2]), m[3] ? Number(m[3]) : null); return; }
     const hash = q.indexOf('#'); const head = hash >= 0 ? q.slice(0, hash) : q, part = hash >= 0 ? q.slice(hash + 1) : '';
     p = part && head ? relative(head) : null;
-    if (p && isFile(p)) { if (!answerPart(repo, p, part)) { print(`  nothing in ${p} is called "${part}"; its outline:`); answerFile(repo, p); } continue; }
+    if (p && isFile(p)) { if (!answerPart(repo, p, part)) { print(`  nothing in ${p} is called "${part}"; its outline:`); answerFile(repo, p); } return; }
     p = relative(q);
     if (p && isFile(p)) answerFile(repo, p);
     else if (p && isDir(p)) answerFolder(repo, p);
@@ -1118,8 +1153,26 @@ function ask(args) {
     else if ((identifier(q) || /^[A-Za-z_$][\w$]*$/.test(q)) && answerName(repo, q, places, every)) { /* answered */ }
     else if (!answerText(repo, q, places, every)) print('  nothing in the code or the docs holds it');
   }
-  saveCache();
 }
+// @map map.ask.answer.fit: a call's answers kept within its budget of characters: the longest leave their code out, and say so
+const CODE = /^\d+\t/;
+const len = s => [...s].length;
+function fit(answers, budget) {
+  const texts = answers.map(a => a[1]);
+  let total = texts.reduce((a, t) => a + len(t), 0);
+  if (budget <= 0 || texts.length < 2) return texts;
+  for (const k of texts.map((_, i) => i).sort((a, b) => len(texts[b]) - len(texts[a]) || a - b)) {
+    if (total <= budget) break;
+    const lines = texts[k].replace(/\n+$/, '').split('\n');
+    const kept = lines.filter(x => !CODE.test(x));
+    if (kept.length === lines.length) continue;
+    const short = [...kept, `  \u2026 ${lines.length - kept.length} lines of code left out to keep this call under ${commas(budget)} characters: ask ${answers[k][0]} in a call of its own`].join('\n') + '\n';
+    total += len(short) - len(texts[k]);
+    texts[k] = short;
+  }
+  return texts;
+}
+// @end map.ask.answer.fit
 // @end map.ask.answer
 
 // @map map.brief.print: where a task starts: the components its words name, ranked, each with its parts, declarations, relations, tests, docs and commits
@@ -1141,25 +1194,28 @@ function ranked(blocks, g, words) {
   return sortedBy(out, ([s, b]) => [-s, b.path, b.first]);
 }
 const round9 = x => Math.round(x * 1e9) / 1e9;
-function brief(args) {
+function brief(args, strict = true) {
   const words = wordsIn(args);
-  if (!words.length) die('Say the task in a few words, as the code names things: brief cart totals discount');
+  if (!words.length) { if (!strict) return []; die('Say the task in a few words, as the code names things: brief cart totals discount'); }
   const [blocks, , untagged] = everything(); const g = new Graph(blocks); const comps = components(blocks, g);
   const hits = ranked(blocks, g, words);
   const per = new Map();
   for (const [s, b] of hits) if (!isTest(b.path)) { const c = component(b.id); if (!per.has(c)) per.set(c, []); per.get(c).push([s, b]); }
   const score = new Map(); for (const [c, xs] of per) score.set(c, round9(sortedBy(xs, ([s]) => [-s]).slice(0, 3).reduce((t, [s], i) => t + s * [1, 0.5, 0.25][i], 0)));
   const order = sortedBy([...score.keys()], c => [-score.get(c)]);
-  if (!order.length) die(`No block matches those words. Try others, or ${CMD} find <word>.`);
+  if (!order.length) { if (!strict) { print(`No block matches ${words.join(' ')}.`); return []; } die(`No block matches those words. Try others, or ${CMD} find <word>.`); }
   const near = order.filter(c => score.get(c) >= 0.25 * score.get(order[0])).slice(0, 10);
   const chosen = near.slice(0, 3), also = near.slice(3);
+  const docComponents = [], docAlso = [], docRecipes = [];
   print(`brief ${words.join(' ')}: ${near.length} of ${order.length} components that match, best first. ask <id or name> reads a block.`);
   for (const c of chosen) {
     const info = comps.get(c), fs_ = sortedStr(info.files);
     print(`\n${c}  ${short(info.what || '', 100)}  [${fs_.slice(0, 4).join(', ')}${fs_.length > 4 ? ' …' : ''}]`);
     const best = new Map();
     for (const [, b] of sortedBy(per.get(c), ([s]) => [-s])) { if (!best.has(b.id)) best.set(b.id, [b, 0]); best.get(b.id)[1]++; }
-    [...best.values()].slice(0, chosen.indexOf(c) < 2 ? 5 : 3).forEach(([b, n], i) => print(`  ${i ? '      ' : 'parts:'} ${b.id} ${b.path}:${b.first}-${b.last}${n > 1 ? ` (+${n - 1} files)` : ''} — ${short(b.purpose, 70)}`));
+    const shownParts = [...best.values()].slice(0, chosen.indexOf(c) < 2 ? 5 : 3);
+    const partsJson = shownParts.map(([b, n]) => ({ id: b.id, file: b.path, first: b.first, last: b.last, purpose: b.purpose, more_files: n - 1 }));
+    shownParts.forEach(([b, n], i) => print(`  ${i ? '      ' : 'parts:'} ${b.id} ${b.path}:${b.first}-${b.last}${n > 1 ? ` (+${n - 1} files)` : ''} — ${short(b.purpose, 70)}`));
     const decl = unique(info.declares);
     if (decl.length) { const about = decl.filter(d => [...wordsOf(d)].some(h => words.some(w => h.startsWith(w)))); const shown = [...about, ...decl.filter(d => !about.includes(d))].slice(0, 8); print(`  declares (${decl.length}): ${shown.join(', ')}` + (decl.length > 8 ? ' …' : '')); }
     const near_ = sortedStr(info.needs).slice(0, 5).join(', ') + (info.needs.size > 5 ? ' …' : ''), by = sortedStr(info.by).slice(0, 5).join(', ') + (info.by.size > 5 ? ' …' : '');
@@ -1167,20 +1223,52 @@ function brief(args) {
     const ts = sortedStr(info.tests.keys());
     print(`  tests (${ts.length}): ` + (ts.length ? ts.slice(0, 6).join(' ') + (ts.length > 6 ? ' …' : '') : 'none import or name it'));
     if (info.docs.size) print(`  docs: ${sortedStr(info.docs).slice(0, 5).join(', ')}`);
-    for (const ln of git('log', '-n', '2', '--format=%ad %h %s', '--date=short', '--', ...fs_).split('\n').filter(x => x.trim())) print(`  changed ${short(ln, 110)}`);
+    const changedLog = git('log', '-n', '2', '--format=%ad %h %s', '--date=short', '--', ...fs_).split('\n').filter(x => x.trim());
+    for (const ln of changedLog) print(`  changed ${short(ln, 110)}`);
+    docComponents.push({ name: c, what: info.what || '', files: fs_, parts: partsJson, declares: decl, needs: sortedStr(info.needs), needed_by: sortedStr(info.by), tests: ts, docs: sortedStr(info.docs), changed: changedLog });
   }
   if (also.length) print('\nalso:');
-  for (const c of also) { const b = sortedBy(per.get(c), ([s]) => [-s])[0][1]; print(`${c}  ${b.id} ${b.path}:${b.first}-${b.last} — ${short(b.purpose, 70)}; ${comps.get(c).tests.size} tests`); }
+  for (const c of also) { const b = sortedBy(per.get(c), ([s]) => [-s])[0][1]; docAlso.push({ component: c, id: b.id, file: b.path, first: b.first, last: b.last, purpose: b.purpose, tests: comps.get(c).tests.size }); print(`${c}  ${b.id} ${b.path}:${b.first}-${b.last} — ${short(b.purpose, 70)}; ${comps.get(c).tests.size} tests`); }
   const checks = hits.filter(([, b]) => isTest(b.path)).slice(0, 3);
   if (checks.length) print('tests that say it: ' + checks.map(([, b]) => `${b.id} ${b.path}:${b.first}-${b.last}`).join('; '));
-  for (const [name, about] of recipesMatching(words)) print(`recipe ${name}: ${about} (${CMD} recipe ${name})`);
+  for (const [name, about] of recipesMatching(words)) docRecipes.push({ name, about }), print(`recipe ${name}: ${about} (${CMD} recipe ${name})`);
   if (untagged.length) print(`${untagged.length} files carry no tag yet (${CMD} gaps): ask <file> gives their declarations`);
   const first = unique(hits.filter(([, b]) => !isTest(b.path)).map(([, b]) => b.id)).slice(0, 4);
   if (first.length) print(`Next, one call for the whole first round (add every other question to it): ${CMD} ask ` + first.join(' '));
   print(`End each change with: ${CMD} check`);
+  if (FLAGS.json) BRIEF_JSON.push({ words, matching: near.length, total: order.length, components: docComponents, also: docAlso, tests_that_say_it: checks.map(([, b]) => ({ id: b.id, file: b.path, first: b.first, last: b.last })), recipes: docRecipes, untagged_files: untagged.length, first_round: first, check: `${CMD} check` });
   saveCache();
+  return first;
 }
 // @end map.brief.print
+
+// @map map.brief.pack: where a task starts, in one call: a recipe's steps and the brief of the task's words, then that first round answered within the budget
+function pack(args) {
+  let words = [], budget = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--budget' && i + 1 < args.length) { budget = args.slice(i, i + 2); i++; continue; }
+    words.push(args[i]);
+  }
+  let first = [];
+  const start = OUT.length;
+  if (words.length && words[0] in CFG.recipes) {
+    recipe(words[0]);
+    first = (CFG.recipes[words[0]].steps || []).map(([target]) => target);
+    words = words.slice(1);
+    if (words.length) print();
+  }
+  if (words.length || !first.length) first.push(...brief(words, !first.length));
+  first = unique(first);
+  if (first.length) print(`\nThe first round, answered (${CMD} ask ${first.join(' ')}):`);
+  const lines = OUT.splice(start);
+  const captured = lines.map(x => x + '\n').join('');
+  OUT.push(...lines);
+  if (first.length) {
+    const limit = budget.length && /^[0-9]+$/.test(budget[1]) ? Number(budget[1]) : (CFG.limits.answer ?? 28000);
+    ask([...first, '--budget', String(limit > 0 ? Math.max(limit - [...captured].length, 1) : 0)]);
+  }
+}
+// @end map.brief.pack
 
 // @map map.recipes.steps: recipes from map.json, the steps of a change across layers, each checked against a block that still exists; plans whose parts can run at once
 function recipe(name) {
@@ -1261,7 +1349,7 @@ whole conversation, so questions go in rounds: every question of a round in one 
    with a script that only prints them, or with a file-reading tool on whole files**: \`ask\` answers the same
    question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a
    range of lines before an edit.
-4. **Tag what you add or move** (\`docs/TAGGING.md\`): a tag on the line above each block, in the file's comment form,
+4. **Tag what you add or move** (\`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md\`): a tag on the line above each block, in the file's comment form,
    \`@end <id>\` when other code follows it; keep purposes true. **End each change with \`{cmd} check\`**, which also
    checks that the map is current (\`{cmd} build\` writes it again).
 `;
@@ -1287,7 +1375,7 @@ function init(args) {
   print('Areas (code files each): ' + mostCommon(counts).map(([a, n]) => `${a} ${n}`).join(', '));
   print(`${files().length} code files, ${files().length - untagged.length} tagged, ${untagged.length} without tags yet.`);
   print('');
-  print(`Next: 1. tag the code (docs/TAGGING.md; ${CMD} gaps lists what is left), 2. ${CMD} build, 3. paste this in AGENTS.md`);
+  print(`Next: 1. tag the code (https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md; ${CMD} gaps lists what is left), 2. ${CMD} build, 3. paste this in AGENTS.md`);
   print(`(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: ${guardCommand()} install <agent>.`);
   print('');
   print(AGENTS_SECTION.split('{cmd}').join(CMD));
@@ -1301,7 +1389,8 @@ in the code; what agents ask it instead of grepping. Start a task with brief, re
     {cmd} brief <words>    where a task starts: the components the words name, their blocks and lines, what
                                 they declare, need and are needed by, their tests, docs and latest commits, then
                                 the first round of questions to ask, in one call
-    {cmd} ask <question> [<question> …] [--in <paths>] [--all]
+    {cmd} pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered, in one call
+    {cmd} ask <question> [<question> …] [--in <paths>] [--all] [--budget N]
                                 the one way to read and locate: every question of a round in one call, each
                                 answered whole: a block id (its code), an identifier (what it is, the code declaring
                                 it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,
@@ -1320,10 +1409,20 @@ tool exists in Python, Node, Go and Rust, with the same answers (tests/conforman
 function main() {
   const [command, ...rest] = ARGV.length ? ARGV : ['check'];
   const queries = { deps, impact, history, where };
-  if (command === 'find' && rest.length) find(rest);
+  if ((command === 'find' || command === 'brief') && rest.includes('--json')) {
+    FLAGS.json = true;
+    const words = rest.filter(w => w !== '--json');
+    if (!words.length) die(USAGE);
+    const start = OUT.length;
+    const more = command === 'find' ? find(words) : brief(words);
+    OUT.splice(start);
+    printJson(command === 'find' ? { declarations: [], blocks: [], ...REC, more } : BRIEF_JSON[0]);
+  }
+  else if (command === 'find' && rest.length) find(rest);
   else if (command in queries && rest.length === 1) queries[command](rest[0]);
   else if (command === 'ask' && rest.length) ask(rest);
   else if (command === 'brief' && rest.length) brief(rest);
+  else if (command === 'pack' && rest.length) pack(rest);
   else if (command === 'tests') tests(rest);
   else if (command === 'recipe' && rest.length <= 1) recipe(rest[0]);
   else if (command === 'plan' && rest.length === 1) plan(rest[0]);

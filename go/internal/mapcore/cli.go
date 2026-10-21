@@ -2,7 +2,9 @@
 package mapcore
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,7 +31,7 @@ const agentsSection = "## Finding code\n\n" +
 	"   with a script that only prints them, or with a file-reading tool on whole files**: `ask` answers the same\n" +
 	"   question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a\n" +
 	"   range of lines before an edit.\n" +
-	"4. **Tag what you add or move** (`docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,\n" +
+	"4. **Tag what you add or move** (`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,\n" +
 	"   `@end <id>` when other code follows it; keep purposes true. **End each change with `{cmd} check`**, which also\n" +
 	"   checks that the map is current (`{cmd} build` writes it again).\n"
 
@@ -40,7 +42,8 @@ const usageText = "The code map: a map of the areas (map.yaml) and of each area'
 	"    {cmd} brief <words>    where a task starts: the components the words name, their blocks and lines, what\n" +
 	"                                they declare, need and are needed by, their tests, docs and latest commits, then\n" +
 	"                                the first round of questions to ask, in one call\n" +
-	"    {cmd} ask <question> [<question> …] [--in <paths>] [--all]\n" +
+	"    {cmd} pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered, in one call\n" +
+	"    {cmd} ask <question> [<question> …] [--in <paths>] [--all] [--budget N]\n" +
 	"                                the one way to read and locate: every question of a round in one call, each\n" +
 	"                                answered whole: a block id (its code), an identifier (what it is, the code declaring\n" +
 	"                                it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,\n" +
@@ -127,7 +130,7 @@ func Init(args []string) {
 	Print("Areas (code files each): " + strings.Join(parts, ", "))
 	Printf("%d code files, %d tagged, %d without tags yet.", len(Files()), len(Files())-len(untagged), len(untagged))
 	Print("")
-	Printf("Next: 1. tag the code (docs/TAGGING.md; %s gaps lists what is left), 2. %s build, 3. paste this in AGENTS.md", CMD, CMD)
+	Printf("Next: 1. tag the code (https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md; %s gaps lists what is left), 2. %s build, 3. paste this in AGENTS.md", CMD, CMD)
 	Printf(`(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: %s install <agent>.`, guardCommand())
 	Print("")
 	Print(strings.ReplaceAll(agentsSection, "{cmd}", CMD))
@@ -144,12 +147,49 @@ func printProblems(found []Problem) {
 	}
 }
 
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 // Main runs one command; it is what cmd/map calls.
 func Main(argv []string) {
 	argv = Setup(argv)
 	command, rest := "check", []string{}
 	if len(argv) > 0 {
 		command, rest = argv[0], argv[1:]
+	}
+	if (command == "find" || command == "brief") && containsArg(rest, "--json") {
+		JSONMode = true
+		var words []string
+		for _, w := range rest {
+			if w != "--json" {
+				words = append(words, w)
+			}
+		}
+		if len(words) == 0 {
+			Die(Usage())
+		}
+		saved := out
+		out = bufio.NewWriterSize(io.Discard, 1<<16)
+		more := 0
+		if command == "find" {
+			more = Find(words)
+		} else {
+			Brief(words, true)
+		}
+		out = saved
+		if command == "find" {
+			PrintJSON(Obj("declarations", recList("declarations"), "blocks", recList("blocks"), "more", more))
+		} else {
+			PrintJSON(briefDoc)
+		}
+		Flush()
+		return
 	}
 	switch {
 	case command == "find" && len(rest) > 0:
@@ -165,7 +205,9 @@ func Main(argv []string) {
 	case command == "ask" && len(rest) > 0:
 		Ask(rest)
 	case command == "brief" && len(rest) > 0:
-		Brief(rest)
+		Brief(rest, true)
+	case command == "pack" && len(rest) > 0:
+		Pack(rest)
 	case command == "tests":
 		Tests(rest)
 	case command == "recipe" && len(rest) <= 1:

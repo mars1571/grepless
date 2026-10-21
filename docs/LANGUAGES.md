@@ -2,7 +2,7 @@
 
 The map is written four times, in Python, Node, Go and Rust, and the four give the same answers: the same
 `map.yaml` byte for byte, the same `ask`, `brief`, `find`, `gaps`, `check`, the same guard and coach for the five
-agents, and the same measurement of a session. `tests/conformance.py` runs every implementation against 46 golden
+agents, and the same measurement of a session. `tests/conformance.py` runs every implementation against 66 golden
 answers recorded from the Python version, the reference, and 12 more: the guard on each agent's events (the reads
 it refuses and the work it lets through), the coach on each agent's calls, and `map-sessions` on two synthetic
 transcripts. `bench/run.py` times them on a synthetic codebase and compares the maps they write.

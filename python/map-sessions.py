@@ -5,12 +5,15 @@
 
     python3 tools/map-sessions.py [--since YYYY-MM-DD] [session-id-prefix …]
 
-One line per session: model calls; context re-read (every call's input, cache read and cache write tokens, in millions);
-the calls that only searched or read (Read, Grep, Glob, tools/map.py, or shell lines made only of grep, sed, cat, head,
-tail, ls, find and the like) and their share; how many of those went through the map; the asks and the questions per
-ask (a round of questions in one call is the aim); the reads of the code or the docs that ran outside the map (judged
-by map-guard.py's own rule); runs of 8 or more calls in a row that only searched or read; and the median response time
-of the model under and over 300k tokens of context (seconds from the tool's result to the answer).
+One line per session, its subagents' transcripts (<session>/subagents/*.jsonl) counted in it: model calls; the
+subagents; the cost in USD (the largest totalCostUSD of the session's cost-state records, which already holds the
+subagents' cost; '-' with none, a trailing '+' when a model's price was unknown); context re-read (every call's input, cache read and cache write tokens, in millions); the calls that only
+searched or read (Read, Grep, Glob, tools/map.py, or shell lines made only of grep, sed, cat, head, tail, ls, find and
+the like) and their share; how many of those went through the map (a line the guard ran through the map in its place
+among them); the asks and the questions per ask (a round of questions in one call is the aim); the reads of the code or
+the docs that ran outside the map (judged by map-guard.py's own rule); runs of 8 or more calls in a row that only
+searched or read; and the median response time of the model under and over 300k tokens of context (seconds from the
+tool's result to the answer).
 """
 import importlib.util
 import json
@@ -78,9 +81,16 @@ def stamp(s):
         return None
 
 
+def said(content):
+    """The text of a tool's result: a string, or the text of its parts."""
+    if isinstance(content, list):
+        return ''.join(x.get('text') or '' for x in content if isinstance(x, dict))
+    return content if isinstance(content, str) else ''
+
+
 def calls(path, judge=None):
     """[(context tokens, kind, response seconds)] per model call; the questions per ask; the reads outside the map that ran."""
-    out, order, asked, uses, refused = {}, [], [], {}, set()
+    out, order, asked, uses, refused, mapped = {}, [], [], {}, set(), set()
     prev = None
     for line in open(path, encoding='utf-8', errors='replace'):
         try:
@@ -91,6 +101,8 @@ def calls(path, judge=None):
         for x in m.get('content') or [] if isinstance(m.get('content'), list) else []:
             if isinstance(x, dict) and x.get('type') == 'tool_result' and 'through its map' in json.dumps(x.get('content')):
                 refused.add(x.get('tool_use_id'))
+            elif isinstance(x, dict) and x.get('type') == 'tool_result' and said(x.get('content')).startswith('== '):
+                mapped.add(x.get('tool_use_id'))                  # the map's answer: a line the guard ran through the map
         if o.get('type') != 'assistant' or not m.get('id'):
             prev = t or prev
             continue
@@ -106,15 +118,16 @@ def calls(path, judge=None):
             order.append(m['id'])
         c['last'] = t or c['last']
         c['ctx'] = max(c['ctx'], sum(u.get(k) or 0 for k in ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')))
-        c['kinds'] += [looks(x.get('name'), x.get('input') or {}) for x in m.get('content') or []
+        c['kinds'] += [(x.get('id'), looks(x.get('name'), x.get('input') or {})) for x in m.get('content') or []
                        if isinstance(x, dict) and x.get('type') == 'tool_use']
         prev = t or prev
-    outside = sum(1 for k, (tool, given, cwd) in uses.items() if k not in refused and judge and judge(tool, given, cwd))
+    outside = sum(1 for k, (tool, given, cwd) in uses.items() if k not in refused | mapped and judge and judge(tool, given, cwd))
     rows = []
     for k in order:
         c = out[k]
+        kinds = ['map' if i in mapped and kind == 'other' else kind for i, kind in c['kinds']]
         secs = (c['last'] - c['since']) if c['since'] and c['last'] and 0 < c['last'] - c['since'] < 600 else None
-        rows.append((c['ctx'], None if not c['kinds'] or None in c['kinds'] else 'map' if 'map' in c['kinds'] else 'other', secs))
+        rows.append((c['ctx'], None if not kinds or None in kinds else 'map' if 'map' in kinds else 'other', secs))
     return rows, asked, outside
 # @end map.sessions.read
 
@@ -125,37 +138,69 @@ def median(xs):
     return xs[len(xs) // 2] if xs else None
 
 
+def measure(path, judge):
+    """One transcript: [calls, context, search/read calls, their context, via map, asks, questions, outside, runs], and
+    its response times under and over 300k tokens."""
+    cs, asked, outside = calls(path, judge)
+    nav = [c for c in cs if c[1]]
+    runs, run = 0, 0
+    for c in cs + [(0, None, None)]:
+        if c[1]:
+            run += 1
+        else:
+            runs, run = runs + (run >= 8), 0
+    row = [len(cs), sum(c[0] for c in cs), len(nav), sum(c[0] for c in nav), sum(1 for c in nav if c[1] == 'map'),
+           len(asked), sum(asked), outside, runs]
+    return row, [c[2] for c in cs if c[2] and c[0] < 300_000], [c[2] for c in cs if c[2] and c[0] >= 300_000]
+
+
+def cost(path):
+    """The session's cost in USD and whether some model's price was unknown: the largest totalCostUSD of its cost-state
+    records (the total is cumulative, and already holds the subagents' cost), or None when it has none."""
+    best, unknown = None, False
+    for x in open(path, encoding='utf-8', errors='replace'):
+        if '"cost-state"' not in x:
+            continue
+        try:
+            d = json.loads(x)
+            v = d['totalCostUSD'] if d.get('type') == 'cost-state' else None
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            best = v if best is None else max(best, v)
+            unknown = unknown or d.get('hasUnknownModelCost') is True
+    return None if best is None else (best, unknown)
+
+
 def report(paths):
-    judge, total = guard(), [0] * 9
-    print(f'{"session":<19}{"calls":>6}{"read M":>8}{"search/read":>16}{"their M":>8}{"via map":>8}'
+    judge, total, spent = guard(), [0] * 10, None
+    print(f'{"session":<19}{"calls":>6}{"agents":>7}{"$":>8}{"read M":>8}{"search/read":>16}{"their M":>8}{"via map":>8}'
           f'{"asks":>6}{"q/ask":>6}{"outside":>8}{"runs 8+":>8}{"s <300k":>8}{"s >300k":>8}')
 
-    def line(name, r, lo=None, hi=None):
-        print(f'{name:<19}{r[0]:>6}{r[1] / 1e6:>8.1f}{r[2]:>9} ({r[2] / r[0]:>4.0%}){r[3] / 1e6:>8.1f}{r[4]:>8}'
+    def line(name, r, lo=None, hi=None, usd=None):
+        money = '-' if usd is None else f'{usd[0]:.2f}' + ('+' if usd[1] else '')
+        print(f'{name:<19}{r[0]:>6}{r[9]:>7}{money:>8}{r[1] / 1e6:>8.1f}{r[2]:>9} ({r[2] / r[0]:>4.0%}){r[3] / 1e6:>8.1f}{r[4]:>8}'
               f'{r[5]:>6}{(r[6] / r[5] if r[5] else 0):>6.1f}{r[7] if judge else "-":>8}{r[8]:>8}'
               f'{(f"{lo:.1f}" if lo else "-"):>8}{(f"{hi:.1f}" if hi else "-"):>8}')
     all_lo, all_hi = [], []
     for p in paths:
-        cs, asked, outside = calls(p, judge)
-        if not cs:
+        subs = sorted((p.parent / p.stem / 'subagents').glob('*.jsonl'))        # the subagents' calls are the session's
+        row, lo, hi = [0] * 9 + [len(subs)], [], []
+        for t in [p] + subs:
+            r, tlo, thi = measure(t, judge)
+            row, lo, hi = [row[k] + r[k] for k in range(9)] + [row[9]], lo + tlo, hi + thi
+        if not row[0]:
             continue
-        nav = [c for c in cs if c[1]]
-        runs, run = 0, 0
-        for c in cs + [(0, None, None)]:
-            if c[1]:
-                run += 1
-            else:
-                runs, run = runs + (run >= 8), 0
-        row = [len(cs), sum(c[0] for c in cs), len(nav), sum(c[0] for c in nav), sum(1 for c in nav if c[1] == 'map'),
-               len(asked), sum(asked), outside, runs]
         total = [total[k] + row[k] for k in range(len(row))]
-        lo, hi = [c[2] for c in cs if c[2] and c[0] < 300_000], [c[2] for c in cs if c[2] and c[0] >= 300_000]
+        usd = cost(p)
+        if usd:
+            spent = usd if spent is None else (spent[0] + usd[0], spent[1] or usd[1])
         all_lo, all_hi = all_lo + lo, all_hi + hi
         day = next((json.loads(x).get('timestamp', '')[:10] for x in open(p, encoding='utf-8', errors='replace')
                     if '"timestamp"' in x), '')
-        line(f'{day} {p.stem[:8]}', row, median(lo), median(hi))
+        line(f'{day} {p.stem[:8]}', row, median(lo), median(hi), usd)
     if total[0]:
-        line('all', total, median(all_lo), median(all_hi))
+        line('all', total, median(all_lo), median(all_hi), spent)
 
 
 def main(args):

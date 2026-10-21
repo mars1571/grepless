@@ -21,7 +21,8 @@ const SHOWN: usize = 15;
 fn has_word(text: &str, w: &str) -> bool { lower_words(text).iter().any(|h| h.starts_with(w)) }
 fn count_words(text: &str, words: &[String]) -> usize { words.iter().filter(|w| has_word(text, w)).count() }
 
-pub fn find(args: &[String]) {
+/// Prints the blocks the words name; returns how many more there were than shown.
+pub fn find(args: &[String]) -> usize {
     let (blocks, _, _) = everything();
     let raw: Vec<String> = args.iter().flat_map(|a| a.split_whitespace().map(String::from)).collect();
     let words: Vec<String> = raw.iter().filter(|x| !identifier(x) || raw.len() == 1).map(|x| x.to_lowercase()).collect();
@@ -33,6 +34,7 @@ pub fn find(args: &[String]) {
                 for d in declarations(&repo, w.trim_start_matches(['#', '.'])).iter().take(5) {
                     let mut wh = repo.where_(&d.path, d.first, 0);
                     if wh.is_empty() { wh = d.path.clone(); }
+                    rec("declarations", serde_json::json!({"name": w, "what": d.what, "in": wh, "file": d.path, "first": d.first, "last": d.last}));
                     print(&format!("{}: {}, declared in {}  {}:{}-{}", w, d.what, wh, d.path, d.first, d.last));
                     said = true;
                 }
@@ -58,6 +60,7 @@ pub fn find(args: &[String]) {
             while i >= 0 { if r[i as usize] == ' ' { cut = i as usize; break; } i -= 1; }
             format!("{}…", r[..cut].iter().collect::<String>())
         };
+        rec("blocks", serde_json::json!({"id": b.id, "file": b.path, "first": b.first, "last": b.last, "lines": b.lines, "purpose": b.purpose}));
         print(&format!("{} {}:{}-{} ({} lines)  {}", pad_r(&b.id, 44), b.path, b.first, b.last, b.lines, purpose));
     }
     if hits.len() > SHOWN {
@@ -66,6 +69,7 @@ pub fn find(args: &[String]) {
     if hits.is_empty() && !said {
         print(&format!("No block matches. Try fewer words, or the code's text: {} ask '<text>'", cmd()));
     }
+    hits.len().saturating_sub(SHOWN)
 }
 
 pub fn matching<'a>(id: &str, blocks: &'a [Block]) -> Vec<&'a Block> {
@@ -121,7 +125,7 @@ pub fn gaps(paths: &[String]) {
     }
     save_cache();
     if untagged > 0 {
-        print(&format!("{} of {} files carry no tag: docs/TAGGING.md says how to tag them with an agent", untagged, chosen.len()));
+        print(&format!("{} of {} files carry no tag: https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md says how to tag them with an agent", untagged, chosen.len()));
     } else if !printed {
         print(&format!("All {} code files are tagged, no block to split, no problem.", chosen.len()));
     }

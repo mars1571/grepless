@@ -17,7 +17,8 @@ its markup). The map is read from the tags and the code, never written by hand:
     python3 tools/map.py brief <words>    where a task starts: the components the words name, their blocks and
                                           lines, what they declare, need and are needed by, their tests, docs and
                                           latest commits, then the first round of questions to ask, in one call
-    python3 tools/map.py ask <question> [<question> …] [--in <paths>] [--all]
+    python3 tools/map.py pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered
+    python3 tools/map.py ask <question> [<question> …] [--in <paths>] [--all] [--budget N]
                                           the one way to read and locate: every question of a round in one call, each
                                           answered whole: a block id (its code), an identifier (what it is, the code
                                           declaring it, every line naming it), a file (whole, or its outline), a folder,
@@ -37,8 +38,10 @@ Python 3.9 or later, the standard library only. Configuration, all of it optiona
 Node, Go and Rust, with the same answers (tests/conformance.py).
 """
 import collections
+import contextlib
 import fnmatch
 import hashlib
+import io
 import json
 import math
 import os
@@ -59,7 +62,7 @@ CONFIG = {
     'describe': [],                      # files without code to read, each [pattern, kind, about]: [["*.png", "asset", "a picture"]]
     'ignore': [],                        # paths left out besides .gitignore and the usual folders: ["dist/", "vendor/", "*.min.js"]
     'forms': {},                         # extensions whose comment form the table below lacks: {".kt": "slash", ".nim": "hash"}
-    'limits': {'untagged': 30, 'block': 16000},   # non-blank lines outside blocks per tagged file; characters of a block's own code
+    'limits': {'untagged': 30, 'block': 16000, 'answer': 28000},   # non-blank lines outside blocks per tagged file; characters of a block's own code; characters of one ask's answers
     'tests': [],                         # globs of test files, over the usual names: ["tests/**", "**/*.spec.ts"]
     'recipes': {},                       # {name: {about, words, steps: [[block id or file, what to do], …], note}}
     'strict': False,                     # check also fails on files that carry no tags yet (CI, once everything is tagged)
@@ -411,7 +414,7 @@ def parse(path, text=None):
         if not m:
             if looks.match(line):
                 problems.append((n, 'a tag that cannot be read: "@map <id>: <purpose>" or "@end <id>", alone on its line'))
-            elif line.startswith('#!') and n > 1:
+            elif line.startswith('#!') and not line.startswith('#![') and n > 1:
                 problems.append((n, 'the #! line must stay the first line: put the tag below it'))
             continue
         kind, id_, purpose = m
@@ -1085,6 +1088,7 @@ def find(words):
         for w in raw:
             if len(raw) == 1 or identifier(w):
                 for d in declarations(repo, w.lstrip('#.'))[:5]:
+                    rec('declarations', {'name': w, 'what': d[3], 'in': repo.where(d[0], d[1]) or d[0], 'file': d[0], 'first': d[1], 'last': d[2]})
                     print(f'{w}: {d[3]}, declared in {repo.where(d[0], d[1]) or d[0]}  {d[0]}:{d[1]}-{d[2]}')
                     said = True
 
@@ -1101,11 +1105,13 @@ def find(words):
         hits = [b for b in hits if has(b['id'], words[0])]
     for b in hits[:SHOWN]:
         purpose = b['purpose'] if len(b['purpose']) <= 120 else b['purpose'][:b['purpose'].rfind(' ', 0, 119)] + '…'
+        rec('blocks', {'id': b['id'], 'file': b['path'], 'first': b['first'], 'last': b['last'], 'lines': b['lines'], 'purpose': b['purpose']})
         print(f'{b["id"]:<44} {b["path"]}:{b["first"]}-{b["last"]} ({b["lines"]} lines)  {purpose}')
     if len(hits) > SHOWN:
         print(f'… {len(hits) - SHOWN} more: add a word to narrow them')
     if not hits and not said:
         print(f"No block matches. Try fewer words, or the code's text: {CMD} ask '<text>'")
+    return max(0, len(hits) - SHOWN)
 
 
 def matching(id_, blocks):
@@ -1144,7 +1150,7 @@ def gaps(paths):
                 print(f'  line {n}: {p}')
     save_cache()
     if untagged:
-        print(f'{untagged} of {len(chosen)} files carry no tag: docs/TAGGING.md says how to tag them with an agent')
+        print(f'{untagged} of {len(chosen)} files carry no tag: https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md says how to tag them with an agent')
     elif not printed:
         print(f'All {len(chosen)} code files are tagged, no block to split, no problem.')
 
@@ -1403,10 +1409,31 @@ def search_word(repo, word, places, skip=(), hyphen=False):
     return hits
 
 
+FLAGS = {'json': False, 'literal': False}      # --json: one JSON document instead of the text; --literal: ask searches its text as it is
+REC = {}                                        # the structured facts of the answer being built (only with --json)
+
+
+def rec(kind, value):
+    if FLAGS['json']:
+        REC.setdefault(kind, []).append(value)
+
+
+BRIEF_JSON = []                                 # the brief's document, built beside its text
+
+
+def block_json(b):
+    return {'id': b['id'], 'file': b['path'], 'first': b['first'], 'last': b['last'], 'purpose': b['purpose']}
+
+
+def print_json(doc):
+    sys.stdout.write(json.dumps(doc, ensure_ascii=False, separators=(',', ':')) + '\n')
+
+
 def show_hits(repo, hits, every, numbers=False):
     places = collections.OrderedDict()
     for p, i, line in hits:
         b = repo.holder(p, i)
+        rec('hits', {'file': p, 'line': i, 'text': line, 'block': b['id'] if b else None})
         if b:
             key, label = (p, b['id'], b['first']), f'{b["id"]}  {p}:{b["first"]}-{b["last"]}  {short(b["purpose"])}'
         elif pathlib.PurePath(p).suffix.lower() in DOCS and (s := repo.section(p, i)):
@@ -1432,6 +1459,7 @@ def show_hits(repo, hits, every, numbers=False):
 
 def answer_lines(repo, path, a, b):
     lines = repo.lines(path)
+    a0, b_none = a, b is None
     if b is None:
         h = repo.holder(path, a)
         s = repo.section(path, a) if pathlib.PurePath(path).suffix.lower() in DOCS else None
@@ -1440,10 +1468,13 @@ def answer_lines(repo, path, a, b):
     else:
         label = repo.where(path, a, b)
     a, b = max(1, a), min(len(lines), b)
+    if b_none and (held := repo.holder(path, a0)):
+        rec('blocks', block_json(held))
     print(f'  {path}:{a}-{b}' + (f'  {label}' if label else ''))
     put(lines, a, b)
 
 
+# @map map.ask.answer.file: a file answered whole, by its outline, its sections, its keys or its declarations
 def answer_file(repo, path):
     lines = repo.lines(path)
     suffix = pathlib.PurePath(path).suffix.lower()
@@ -1479,6 +1510,7 @@ def answer_file(repo, path):
         for b in sorted(repo.by_file[path], key=lambda b: (b['first'], -b['last'])):
             while outer and outer[-1] < b['first']:
                 outer.pop()
+            rec('blocks', block_json(b))
             print(f'{b["first"]:>6}-{b["last"]:<6}{"  " * len(outer)}{b["id"]}  {short(b["purpose"])}'
                   + (f'  [{", ".join(named[b["id"]][:8])}{" …" if len(named[b["id"]]) > 8 else ""}]' if named[b['id']] else ''))
             outer.append(b['last'])
@@ -1493,6 +1525,8 @@ def answer_file(repo, path):
         print(f'  {path}: {len(lines)} lines; the first {SMALL} (more: ask {path}:<first>-<last>)')
         put(lines, 1, SMALL)
 
+# @end map.ask.answer.file
+
 
 def answer_files(repo, paths, about):
     print(f'  {about}: {len(paths)} files')
@@ -1500,6 +1534,7 @@ def answer_files(repo, paths, about):
         first = min(repo.by_file.get(p, []), key=lambda b: b['first'], default=None)
         heads = repo.sections(p) if pathlib.PurePath(p).suffix.lower() in DOCS else []
         what = short(first['purpose'], 90) if first else (heads[0][3] if heads else '')
+        rec('files', {'file': p, 'lines': len(repo.lines(p)), 'what': what})
         print(f'    {p}  ({len(repo.lines(p))} lines)  {what}')
 
 
@@ -1534,6 +1569,7 @@ def answer_part(repo, path, words):
         return bool(found)
     found = [b for b in repo.by_file.get(path, []) if has(b['id'] + ' ' + b['purpose'])]
     for b in found:
+        rec('blocks', block_json(b))
         print(f'  {path}:{b["first"]}-{b["last"]}  {b["id"]}: {b["purpose"]}')
         put(repo.lines(path), b['first'], b['last'])
     return bool(found)
@@ -1544,17 +1580,20 @@ def answer_block(repo, q):
     inside = [b for b in repo.blocks if b['id'].startswith(q + '.')]
     if exact:
         for b in exact:
+            rec('blocks', block_json(b))
             nested = [x for x in repo.by_file[b['path']] if x is not b and b['first'] <= x['first'] and x['last'] <= b['last']]
             print(f'  {b["path"]}:{b["first"]}-{b["last"]}  {b["id"]}: {b["purpose"]}')
             if b['last'] - b['first'] + 1 > SMALL and nested:
                 print(f'  {b["last"] - b["first"] + 1} lines; the blocks inside it (one: ask <id>, or {b["path"]}:<first>-<last>)')
                 for x in nested:
+                    rec('blocks', block_json(x))
                     print(f'{x["first"]:>6}-{x["last"]:<6}{x["id"]}  {short(x["purpose"])}')
             else:
                 put(repo.lines(b['path']), b['first'], b['last'])
     elif len(inside) <= 60:
         print(f'  {len(inside)} blocks under {q} (one: ask <id>)')
         for b in inside:
+            rec('blocks', block_json(b))
             print(f'    {b["id"]:<44} {b["path"]}:{b["first"]}-{b["last"]}  {short(b["purpose"])}')
     else:
         parts = collections.OrderedDict()
@@ -1572,6 +1611,7 @@ def answer_name(repo, q, places, every):
     if len(decls) > 3:
         print(f'  declared in {len(decls)} places (the code of one: ask <file>:<first>-<last>)')
     for path, first, last, what, _ in decls:
+        rec('declarations', {'what': what, 'file': path, 'first': first, 'last': last})
         print(f'  {what}: {path}:{first}-{last}  in {repo.where(path, first) or path}')
         if len(decls) <= 3 and last - first < LONG:
             put(repo.lines(path), first, last)
@@ -1606,31 +1646,44 @@ def unescaped_pipe(q):
 
 
 def answer_text(repo, q, places, every):
-    if '\\|' in q and not unescaped_pipe(q):
+    literal = FLAGS['literal']
+    if not literal and '\\|' in q and not unescaped_pipe(q):
         q = q.replace('\\|', '|')
     try:
-        rx = re.compile(q)
+        rx = re.compile(re.escape(q) if literal else q)
     except re.error:
         rx = re.compile(re.escape(q))
     hits = search(repo, rx, places)
     if hits:
         show_hits(repo, hits, every)
         return True
-    if ' ' in q.strip():
+    if not literal and ' ' in q.strip():
         print('  no line holds it; the blocks whose id, purpose or file have these words:')
         find(q.split())
         return True
     return False
 
 
+# @map map.ask.answer.call: the command reading a call's questions, each answered into its own part of the output, then fitted to the budget
 def ask(args):
     every = '--all' in args
-    questions, waiting, i = [], [], 0
+    budget, questions, waiting, i = CFG['limits'].get('answer', 28000), [], [], 0
     while i < len(args):
         if args[i] == '--in' and i + 1 < len(args):
             places = [relative(x) or x.lstrip('./') for x in args[i + 1].split(',') if x]
             questions += [(q, places) for q in waiting]
             waiting, i = [], i + 2
+            continue
+        if args[i] == '--budget' and i + 1 < len(args) and args[i + 1].isdigit():
+            budget, i = int(args[i + 1]), i + 2
+            continue
+        if args[i] == '--json':
+            FLAGS['json'] = True
+            i += 1
+            continue
+        if args[i] in ('--literal', '-F'):
+            FLAGS['literal'] = True
+            i += 1
             continue
         if args[i] != '--all':
             waiting.append(args[i])
@@ -1640,39 +1693,90 @@ def ask(args):
         sys.exit(__doc__)
     repo = Repo()
     ids = {b['id'] for b in repo.blocks}
+    answers, docs = [], []
     for q, places in questions:
-        print(f'== {q}')
-        m = re.fullmatch(r'(.+?):(\d+)(?:-(\d+))?', q)
-        path = relative(m.group(1)) if m else None
-        if path and (ROOT / path).is_file():
-            answer_lines(repo, path, int(m.group(2)), int(m.group(3)) if m.group(3) else None)
-            continue
-        head, _, part = q.partition('#')
-        path = relative(head) if part and head else None
-        if path and (ROOT / path).is_file():
-            if not answer_part(repo, path, part):
-                print(f'  nothing in {path} is called "{part}"; its outline:')
-                answer_file(repo, path)
-            continue
-        path = relative(q)
-        if path and (ROOT / path).is_file():
-            answer_file(repo, path)
-        elif path and (ROOT / path).is_dir():
-            answer_folder(repo, path)
-        elif re.search(r'[*?]', q) and '/' in q and not re.search(r'[\\|()+^$]', q):
-            answer_files(repo, [p for p in repo.files if fnmatch.fnmatch(p, q.lstrip('./'))], q)
-        elif names_in(q):
-            for name in names_in(q):
-                print(f'  {name}:' if len(names_in(q)) > 1 else f'  the name {name}')
-                if not answer_name(repo, name, places, every):
-                    print('  nothing in the code or the docs holds it')
-        elif q in ids or any(x.startswith(q + '.') for x in ids):
-            answer_block(repo, q)
-        elif (identifier(q) or re.fullmatch(r'[A-Za-z_$][\w$]*', q)) and answer_name(repo, q, places, every):
-            pass
-        elif not answer_text(repo, q, places, every):
-            print('  nothing in the code or the docs holds it')
+        REC.clear()
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            answer(repo, ids, q, places, every)
+        answers.append((q, out.getvalue()))
+        if FLAGS['json']:
+            doc = {'question': q, 'blocks': [], 'declarations': [], 'files': [], 'hits': [], **REC}
+            doc['found'] = 'nothing in the code or the docs holds it' not in out.getvalue()
+            doc['text'] = out.getvalue()
+            docs.append(doc)
+    if FLAGS['json']:
+        print_json({'questions': docs})
+        save_cache()
+        return
+    sys.stdout.write(''.join(fit(answers, budget)))
     save_cache()
+
+
+def answer(repo, ids, q, places, every):
+    """One question of a call, answered whole."""
+    print(f'== {q}')
+    if FLAGS['literal']:
+        if not answer_text(repo, q, places, every):
+            print('  nothing in the code or the docs holds it')
+        return
+    m = re.fullmatch(r'(.+?):(\d+)(?:-(\d+))?', q)
+    path = relative(m.group(1)) if m else None
+    if path and (ROOT / path).is_file():
+        answer_lines(repo, path, int(m.group(2)), int(m.group(3)) if m.group(3) else None)
+        return
+    head, _, part = q.partition('#')
+    path = relative(head) if part and head else None
+    if path and (ROOT / path).is_file():
+        if not answer_part(repo, path, part):
+            print(f'  nothing in {path} is called "{part}"; its outline:')
+            answer_file(repo, path)
+        return
+    path = relative(q)
+    if path and (ROOT / path).is_file():
+        answer_file(repo, path)
+    elif path and (ROOT / path).is_dir():
+        answer_folder(repo, path)
+    elif re.search(r'[*?]', q) and '/' in q and not re.search(r'[\\|()+^$]', q):
+        answer_files(repo, [p for p in repo.files if fnmatch.fnmatch(p, q.lstrip('./'))], q)
+    elif names_in(q):
+        for name in names_in(q):
+            print(f'  {name}:' if len(names_in(q)) > 1 else f'  the name {name}')
+            if not answer_name(repo, name, places, every):
+                print('  nothing in the code or the docs holds it')
+    elif q in ids or any(x.startswith(q + '.') for x in ids):
+        answer_block(repo, q)
+    elif (identifier(q) or re.fullmatch(r'[A-Za-z_$][\w$]*', q)) and answer_name(repo, q, places, every):
+        pass
+    elif not answer_text(repo, q, places, every):
+        print('  nothing in the code or the docs holds it')
+
+# @end map.ask.answer.call
+
+
+# @map map.ask.answer.fit: a call's answers kept within its budget of characters: the longest leave their code out, and say so
+CODE = re.compile(r'\d+\t')
+
+
+def fit(answers, budget):
+    """A call's answers within its budget of characters: while they run over it, the longest answer (the first of equals)
+    keeps its places and leaves out its lines of code, and says so. One question is always answered whole."""
+    texts = [t for _, t in answers]
+    total = sum(len(t) for t in texts)
+    if budget <= 0 or len(texts) < 2:
+        return texts
+    for k in sorted(range(len(texts)), key=lambda k: (-len(texts[k]), k)):
+        if total <= budget:
+            break
+        lines = texts[k].rstrip('\n').split('\n')
+        kept = [x for x in lines if not CODE.match(x)]
+        if len(kept) == len(lines):
+            continue
+        short_ = '\n'.join(kept + [f'  … {len(lines) - len(kept)} lines of code left out to keep this call under '
+                                   f'{commas(budget)} characters: ask {answers[k][0]} in a call of its own']) + '\n'
+        total += len(short_) - len(texts[k])
+        texts[k] = short_
+    return texts
+# @end map.ask.answer.fit
 # @end map.ask.answer
 
 
@@ -1710,9 +1814,13 @@ def ranked(blocks, g, words):
     return sorted(out, key=lambda x: (-x[0], x[1]['path'], x[1]['first']))
 
 
-def brief(args):
+def brief(args, strict=True):
+    """Prints the brief and returns its first round of questions; without strict, words that match nothing say so and
+    return none instead of ending the command."""
     words = words_in(args)
     if not words:
+        if not strict:
+            return []
         sys.exit('Say the task in a few words, as the code names things: brief cart totals discount')
     blocks, _, untagged = everything()
     g = Graph(blocks)
@@ -1725,9 +1833,13 @@ def brief(args):
     score = {c: round(sum(s * (1, 0.5, 0.25)[i] for i, (s, _) in enumerate(sorted(xs, key=lambda x: -x[0])[:3])), 9) for c, xs in per.items()}
     order = sorted(score, key=lambda c: -score[c])
     if not order:
+        if not strict:
+            print(f'No block matches {" ".join(words)}.')
+            return []
         sys.exit(f'No block matches those words. Try others, or {CMD} find <word>.')
     near = [c for c in order if score[c] >= 0.25 * score[order[0]]][:10]
     chosen, also = near[:3], near[3:]
+    doc_components, doc_also, doc_recipes = [], [], []
     print(f'brief {" ".join(words)}: {len(near)} of {len(order)} components that match, best first. ask <id or name> reads a block.')
     for c in chosen:
         info = comps[c]
@@ -1736,7 +1848,9 @@ def brief(args):
         best = {}
         for _, b in sorted(per[c], key=lambda x: -x[0]):
             best.setdefault(b['id'], [b, 0])[1] += 1
-        for i, (b, n) in enumerate(list(best.values())[:5 if c in chosen[:2] else 3]):
+        shown_parts = list(best.values())[:5 if c in chosen[:2] else 3]
+        parts_json = [{'id': b['id'], 'file': b['path'], 'first': b['first'], 'last': b['last'], 'purpose': b['purpose'], 'more_files': n - 1} for b, n in shown_parts]
+        for i, (b, n) in enumerate(shown_parts):
             more = f' (+{n - 1} files)' if n > 1 else ''
             print(f'  {"parts:" if not i else "      "} {b["id"]} {b["path"]}:{b["first"]}-{b["last"]}{more} — {short(b["purpose"], 70)}')
         decl = list(dict.fromkeys(info['declares']))
@@ -1753,17 +1867,22 @@ def brief(args):
         if info['docs']:
             print(f'  docs: {", ".join(sorted(info["docs"])[:5])}')
         log = git('log', '-n', '2', '--format=%ad %h %s', '--date=short', '--', *fs)
-        for ln in [x for x in log.split('\n') if x.strip()]:
+        changed = [x for x in log.split('\n') if x.strip()]
+        for ln in changed:
             print(f'  changed {short(ln, 110)}')
+        doc_components.append({'name': c, 'what': info['what'] or '', 'files': fs, 'parts': parts_json, 'declares': decl, 'needs': sorted(info['needs']),
+                               'needed_by': sorted(info['by']), 'tests': ts, 'docs': sorted(info['docs']), 'changed': changed})
     if also:
         print('\nalso:')
     for c in also:
         b = sorted(per[c], key=lambda x: -x[0])[0][1]
+        doc_also.append({'component': c, 'id': b['id'], 'file': b['path'], 'first': b['first'], 'last': b['last'], 'purpose': b['purpose'], 'tests': len(comps[c]['tests'])})
         print(f'{c}  {b["id"]} {b["path"]}:{b["first"]}-{b["last"]} — {short(b["purpose"], 70)}; {len(comps[c]["tests"])} tests')
     checks = [b for _, b in hits if is_test(b['path'])][:3]
     if checks:
         print('tests that say it: ' + '; '.join(f'{b["id"]} {b["path"]}:{b["first"]}-{b["last"]}' for b in checks))
     for name, about in recipes_matching(words):
+        doc_recipes.append({'name': name, 'about': about})
         print(f'recipe {name}: {about} ({CMD} recipe {name})')
     if untagged:
         print(f'{len(untagged)} files carry no tag yet ({CMD} gaps): ask <file> gives their declarations')
@@ -1771,8 +1890,45 @@ def brief(args):
     if first:
         print(f'Next, one call for the whole first round (add every other question to it): {CMD} ask ' + ' '.join(first))
     print(f'End each change with: {CMD} check')
+    if FLAGS['json']:
+        BRIEF_JSON.append({'words': words, 'matching': len(near), 'total': len(order), 'components': doc_components, 'also': doc_also,
+                           'tests_that_say_it': [{'id': b['id'], 'file': b['path'], 'first': b['first'], 'last': b['last']} for b in checks],
+                           'recipes': doc_recipes, 'untagged_files': len(untagged), 'first_round': first, 'check': f'{CMD} check'})
     save_cache()
+    return first
 # @end map.brief.print
+
+
+# @map map.brief.pack: where a task starts, in one call: a recipe's steps and the brief of the task's words, then that first round answered within the budget
+def pack(args):
+    """pack <recipe> [words…] | pack <words…> [--budget N]: the recipe's steps (when the first word names one) and the
+    brief of the other words, then their blocks and files asked in one round, as ask answers it."""
+    words, budget, i = [], [], 0
+    while i < len(args):
+        if args[i] == '--budget' and i + 1 < len(args):
+            budget, i = args[i:i + 2], i + 2
+            continue
+        words.append(args[i])
+        i += 1
+    first = []
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        if words and words[0] in CFG['recipes']:
+            recipe(words[0])
+            first = [target for target, _ in CFG['recipes'][words[0]].get('steps', [])]
+            words = words[1:]
+            if words:
+                print()
+        if words or not first:
+            first += brief(words, strict=not first)
+        first = list(dict.fromkeys(first))
+        if first:
+            print(f'\nThe first round, answered ({CMD} ask {" ".join(first)}):')
+    sys.stdout.write(out.getvalue())
+    sys.stdout.flush()
+    if first:
+        limit = int(budget[1]) if budget and budget[1].isdigit() else CFG['limits'].get('answer', 28000)
+        ask(first + ['--budget', str(max(limit - len(out.getvalue()), 1) if limit > 0 else 0)])   # the whole call within it
+# @end map.brief.pack
 
 
 # @map map.recipes.steps: recipes from map.json, the steps of a change across layers, each checked against a block that still exists; plans whose parts can run at once
@@ -1885,7 +2041,7 @@ whole conversation, so questions go in rounds: every question of a round in one 
    with a script that only prints them, or with a file-reading tool on whole files**: `ask` answers the same
    question, by block, with the code. Counting, computing over data, editing and other files go ahead; so does a
    range of lines before an edit.
-4. **Tag what you add or move** (`docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
+4. **Tag what you add or move** (`https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md`): a tag on the line above each block, in the file's comment form,
    `@end <id>` when other code follows it; keep purposes true. **End each change with `{cmd} check`**, which also
    checks that the map is current (`{cmd} build` writes it again).
 """
@@ -1917,7 +2073,7 @@ def init(args):
     print('Areas (code files each): ' + ', '.join(f'{a} {n}' for a, n in counts.most_common()))
     print(f'{len(files())} code files, {len(files()) - len(untagged)} tagged, {len(untagged)} without tags yet.')
     print()
-    print(f'Next: 1. tag the code (docs/TAGGING.md; {CMD} gaps lists what is left), 2. {CMD} build, 3. paste this in AGENTS.md')
+    print(f'Next: 1. tag the code (https://github.com/mars1571/grepless/blob/main/docs/TAGGING.md; {CMD} gaps lists what is left), 2. {CMD} build, 3. paste this in AGENTS.md')
     print(f'(CLAUDE.md imports it with a line "@AGENTS.md"), 4. install the guard: {guard_command()} install <agent>.')
     print()
     print(AGENTS_SECTION.format(cmd=CMD))
@@ -1932,7 +2088,8 @@ in the code; what agents ask it instead of grepping. Start a task with brief, re
     {cmd} brief <words>    where a task starts: the components the words name, their blocks and lines, what
                                 they declare, need and are needed by, their tests, docs and latest commits, then
                                 the first round of questions to ask, in one call
-    {cmd} ask <question> [<question> …] [--in <paths>] [--all]
+    {cmd} pack [recipe] <words>   brief (and the recipe's steps) with that first round already answered, in one call
+    {cmd} ask <question> [<question> …] [--in <paths>] [--all] [--budget N]
                                 the one way to read and locate: every question of a round in one call, each
                                 answered whole: a block id (its code), an identifier (what it is, the code declaring
                                 it, every line naming it), a file (whole, or its outline), a folder, src/x.js:120-180,
@@ -1951,7 +2108,15 @@ tool exists in Python, Node, Go and Rust, with the same answers (tests/conforman
 QUERIES = {'deps': deps, 'impact': impact, 'history': history, 'where': where}
 if __name__ == '__main__':
     command, rest = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ('check', [])
-    if command == 'find' and rest:
+    if command in ('find', 'brief') and '--json' in rest:
+        FLAGS['json'] = True
+        rest = [w for w in rest if w != '--json']
+        if not rest:
+            sys.exit(__doc__)
+        with contextlib.redirect_stdout(io.StringIO()):
+            more = find(rest) if command == 'find' else brief(rest)
+        print_json({'declarations': [], 'blocks': [], **REC, 'more': more} if command == 'find' else BRIEF_JSON[0])
+    elif command == 'find' and rest:
         find(rest)
     elif command in QUERIES and len(rest) == 1:
         QUERIES[command](rest[0])
@@ -1959,6 +2124,8 @@ if __name__ == '__main__':
         ask(rest)
     elif command == 'brief' and rest:
         brief(rest)
+    elif command == 'pack' and rest:
+        pack(rest)
     elif command == 'tests':
         tests(rest)
     elif command == 'recipe' and len(rest) <= 1:

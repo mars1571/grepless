@@ -31,9 +31,15 @@ when there is no `CLAUDE.md`. Source: [code.claude.com/docs/en/memory](https://c
 
 Guard: a `PreToolUse` hook in `.claude/settings.json` gets `{tool_name, tool_input, cwd, …}` on stdin and
 refuses with `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-"permissionDecisionReason": "…"}}` (or exit code 2 with the reason on stderr). Coach: a `PostToolUse` hook answers
+"permissionDecisionReason": "…"}}` (or exit code 2 with the reason on stderr). A shell line made only of reads the
+map answers, beside steps that only read (`git status`, `which`, `--version`, `echo`, counts, filters), is instead run in
+its place: `"permissionDecision": "allow"` with `"updatedInput"` (the whole input, its `command` replaced: "updatedInput
+replaces the entire input object") and `"additionalContext"` saying so. A line that also has a step that is not a read
+is never allowed (an allow skips Claude Code's permission prompt): it is denied with the whole line to send again in the
+reason, after `Run instead:`, each read as its ask and every other step as written; the other agents get that line too. Hooks of the
+settings files also run inside subagents, whose input carries `agent_id` and `agent_type`. Coach: a `PostToolUse` hook answers
 `{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "…"}}`, a "string added to Claude's
-context alongside the tool result". Claude Code watches its settings files and applies an edit to the hooks in the
+context alongside the tool result"; it counts each subagent's reads apart. Claude Code watches its settings files and applies an edit to the hooks in the
 running session; when one has not appeared after a few seconds, restarting the session reloads them. Sources:
 [hooks](https://code.claude.com/docs/en/hooks), [settings](https://code.claude.com/docs/en/settings).
 
