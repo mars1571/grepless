@@ -25,7 +25,7 @@ fn kind(tool: &str, given: &Map<String, Value>) -> &'static str {
     }
     let step_split = Regex::new(r"&&|\|\||[;\n|]").unwrap();
     let assigns = Regex::new(r"^(\w+=\S+\s+)+").unwrap();
-    let map_script = Regex::new(r"map(?:\.py|\.mjs)$|(?:^|/)map$").unwrap();
+    let map_script = Regex::new(if cfg!(windows) { r"map(?:\.py|\.mjs|\.exe)$|(?:^|/)map$" } else { r"map(?:\.py|\.mjs)$|(?:^|/)map$" }).unwrap();   // Windows: tools/map.exe too
     let quiet = ["head", "tail", "cut", "wc", "echo", "grep", "sort", "uniq"];
     let mut words: Vec<Vec<String>> = Vec::new();
     for step in step_split.split(&lines.join("\n")) {

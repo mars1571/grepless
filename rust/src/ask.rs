@@ -150,7 +150,12 @@ impl Repo {
 
 pub fn relative(q: &str) -> Option<String> {
     let r = root().to_string_lossy().to_string();
-    let mut p = if q.starts_with(&format!("{}/", r)) { q[r.len() + 1..].to_string() } else { q.to_string() };
+    // on Windows a path is written with `\` or `/`, the drive letter in either case, or as Git Bash's /c/…
+    let (r, q) = if cfg!(windows) { (r.replace('\\', "/"), crate::guard::msys_path(q).unwrap_or_else(|| q.to_string()).replace('\\', "/")) } else { (r, q.to_string()) };
+    let q = q.as_str();
+    let under = q.len() > r.len() && q.as_bytes()[r.len()] == b'/' && q.is_char_boundary(r.len())
+        && if cfg!(windows) { q[..r.len()].eq_ignore_ascii_case(&r) } else { q[..r.len()] == r };
+    let mut p = if under { q[r.len() + 1..].to_string() } else { q.to_string() };
     if p.starts_with("./") { p = p[2..].to_string(); }
     p = p.trim_end_matches('/').to_string();
     if p.is_empty() { p = ".".into(); }

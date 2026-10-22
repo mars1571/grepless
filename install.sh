@@ -8,6 +8,8 @@
 # installed (go, cargo); without it, they download this system's binaries from the repository's latest release, check
 # them against its SHA256SUMS and unpack them into tools/ (MAP_RELEASES names another place to download them from).
 # map.json's command is set to the one installed, and init ends: the areas detected, the section for AGENTS.md printed.
+# On Windows, run it in Git Bash (https://gitforwindows.org): the programs are installed as tools/map.exe and so on, and
+# the command stays `tools/map`, which Git Bash resolves, so map.json reads the same on every system.
 set -e
 lang=python
 target=.
@@ -22,6 +24,12 @@ here=$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)
 repo=${MAP_REPO:-mars1571/grepless}
 raw="https://raw.githubusercontent.com/$repo/main"
 releases=${MAP_RELEASES:-https://github.com/$repo/releases/latest/download}
+exe=
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=.exe ;; esac      # Git Bash on Windows: the compiled programs are name.exe
+py=
+for p in python3 python; do      # the Python 3 that runs: on Windows python3 may be missing, or the Store's stub that does not run
+  if "$p" -c 'import sys; sys.exit(sys.version_info[0] < 3)' > /dev/null 2>&1; then py=$p; break; fi
+done
 mkdir -p "$target/tools"
 tools=$(cd "$target/tools" && pwd)
 fetch() {  # fetch <path in the repository> <file in tools/>
@@ -29,6 +37,12 @@ fetch() {  # fetch <path in the repository> <file in tools/>
 }
 source_of() {  # source_of <go|rust>: a folder holding the repository's source of that implementation
   if [ -n "$here" ]; then echo "$here"; else src=$(mktemp -d) && git clone -q --depth 1 "https://github.com/$repo" "$src/grepless" && echo "$src/grepless"; fi
+}
+unzip_to() {  # unzip_to <zip> <folder>: Git Bash has no unzip, but Windows ships a tar (bsdtar) that reads zips
+  if command -v unzip > /dev/null; then unzip -oq "$1" -d "$2"; return; fi
+  win=tar
+  if command -v cygpath > /dev/null && [ -n "$SYSTEMROOT" ]; then win="$(cygpath -u "$SYSTEMROOT")/System32/tar.exe"; fi
+  "$win" -xf "$1" -C "$2"
 }
 prebuilt() {  # prebuilt <go|rust>: this system's binaries from the release, checked against SHA256SUMS, into tools/
   case "$(uname -s)" in
@@ -51,8 +65,7 @@ prebuilt() {  # prebuilt <go|rust>: this system's binaries from the release, che
   got=$( (sha256sum "$down/$name" 2>/dev/null || shasum -a 256 "$down/$name") | awk '{ print $1 }')
   [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$name: its SHA-256 is not the one SHA256SUMS gives; nothing installed."; exit 1; }
   if [ "$ext" = tar.gz ]; then tar -xzf "$down/$name" -C "$tools"
-  elif command -v unzip > /dev/null; then unzip -oq "$down/$name" -d "$tools"
-  else tar -xf "$down/$name" -C "$tools"; fi
+  else unzip_to "$down/$name" "$tools"; fi
   rm -rf "$down"
   echo "$name: SHA-256 checked, unpacked into $tools."
 }
@@ -60,7 +73,7 @@ case "$lang" in
   python)
     for f in map.py map-guard.py map-coach.py map-sessions.py; do fetch "python/$f" "$f"; done
     chmod +x "$tools"/map*.py
-    cmd="python3 tools/map.py" ;;
+    cmd="${py:-python3} tools/map.py" ;;
   node)
     for f in map.mjs map-guard.mjs map-coach.mjs map-sessions.mjs; do fetch "node/$f" "$f"; done
     chmod +x "$tools"/map*.mjs
@@ -68,7 +81,7 @@ case "$lang" in
   go)
     if command -v go > /dev/null; then
       src=$(source_of go)
-      (cd "$src/go" && for b in map map-guard map-coach map-sessions; do go build -o "$tools/$b" "./cmd/$b"; done)
+      (cd "$src/go" && for b in map map-guard map-coach map-sessions; do go build -o "$tools/$b$exe" "./cmd/$b"; done)
     else
       prebuilt go go
     fi
@@ -76,7 +89,7 @@ case "$lang" in
   rust)
     if command -v cargo > /dev/null; then
       src=$(source_of rust)
-      (cd "$src/rust" && cargo build --release -q && for b in map map-guard map-coach map-sessions; do cp "target/release/$b" "$tools/$b"; done)
+      (cd "$src/rust" && cargo build --release -q && for b in map map-guard map-coach map-sessions; do cp "target/release/$b$exe" "$tools/$b$exe"; done)
     else
       prebuilt rust cargo
     fi
@@ -90,8 +103,8 @@ case "$lang" in    # the tool's copies in tools/ are vendored code, which map.js
   node) own="tools/map.mjs tools/map-guard.mjs tools/map-coach.mjs tools/map-sessions.mjs" ;;
   *) own="" ;;     # binaries: no code the map reads
 esac
-if command -v python3 > /dev/null; then    # map.json: its command, and the copies left out
-  python3 - "$cmd" "$own" <<'PY'
+if [ -n "$py" ]; then    # map.json: its command, and the copies left out
+  "$py" - "$cmd" "$own" <<'PY'
 import json, os, sys
 cmd, own = sys.argv[1], sys.argv[2].split()
 try:
@@ -102,7 +115,7 @@ old, ignore = cfg.get('command'), cfg.get('ignore', [])
 cfg['command'] = cmd
 if own:
     cfg['ignore'] = ignore + [f for f in own if f not in ignore]
-with open('map.json', 'w', encoding='utf-8') as f:
+with open('map.json', 'w', encoding='utf-8', newline='\n') as f:      # LF on every system: Windows would write CRLF
     f.write(json.dumps(cfg, indent=2, ensure_ascii=False) + '\n')
 print(f'map.json: the command is {cmd}' + (f' (it was {old})' if old and old != cmd else '') + ('; the copies in tools/ are left out of the map (ignore)' if own else '') + '.')
 PY

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -200,10 +201,41 @@ func (r *Repo) Where(p string, a, b int) string {
 	return s
 }
 
+var msysRx = regexp.MustCompile(`(?s)^(?:/cygdrive)?/([A-Za-z])(/.*)?$`)
+
+// msysPath: a Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); false on other
+// systems and for any other path.
+func msysPath(p string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	m := msysRx.FindStringSubmatch(p)
+	if m == nil {
+		return "", false
+	}
+	tail := m[2]
+	if tail == "" {
+		tail = "/"
+	}
+	return strings.ToUpper(m[1]) + ":" + tail, true
+}
+
 func Relative(q string) (string, bool) {
+	r := ROOT
+	var under bool
+	if runtime.GOOS == "windows" { // a path is written with `\` or `/`, the drive letter in either case, or as Git Bash's /c/...
+		r = strings.ReplaceAll(r, `\`, "/")
+		if m, ok := msysPath(q); ok {
+			q = m
+		}
+		q = strings.ReplaceAll(q, `\`, "/")
+		under = len(q) > len(r) && q[len(r)] == '/' && strings.EqualFold(q[:len(r)], r)
+	} else {
+		under = strings.HasPrefix(q, r+"/")
+	}
 	p := q
-	if strings.HasPrefix(q, ROOT+"/") {
-		p = q[len(ROOT)+1:]
+	if under {
+		p = q[len(r)+1:]
 	}
 	p = strings.TrimPrefix(p, "./")
 	p = strings.TrimRight(p, "/")

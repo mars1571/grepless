@@ -10,6 +10,9 @@ import { replacement } from './map-guard.mjs';
 
 const ROOT = process.env.MAP_ROOT || path.dirname(path.dirname(fs.realpathSync(process.argv[1])));
 const PROJECTS = path.join(os.homedir(), '.claude', 'projects');
+const WIN = process.platform === 'win32';   // how a line names the map: Windows adds tools/map.exe
+const MAP_USE = WIN ? /map(?:\.py|\.mjs|\.exe)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b/ : /map(?:\.py|\.mjs)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b/;
+const MAP_ASK = WIN ? /map(?:\.py|\.mjs|\.exe)?\s+ask\s+/g : /map(?:\.py|\.mjs)?\s+ask\s+/g;
 const LOOK = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more', 'ls', 'find', 'tree', 'wc', 'cut',
   'sort', 'uniq', 'tr', 'xargs', 'column', 'echo', 'printf']);
 
@@ -17,7 +20,7 @@ function looks(tool, given) {
   if (['Read', 'Grep', 'Glob'].includes(tool)) return 'other';
   if (tool !== 'Bash') return null;
   let line = given.command || '';
-  if (/map(?:\.py|\.mjs)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b/.test(line)) return 'map';
+  if (MAP_USE.test(line)) return 'map';
   line = line.replace(/\d?>&\d|\d?>\s*\/dev\/null/g, ' ');
   if (/\bsed\s+-i|>\s*\S|\bnode\b|\bmake\b|\bnpx\b/.test(line)) return null;
   for (const m of line.matchAll(/\bpython3?\s+(\S*)/g)) if (!m[1].endsWith('map.py')) return null;
@@ -27,7 +30,7 @@ function looks(tool, given) {
 }
 function questions(line) {
   const out = [];
-  for (const m of line.matchAll(/map(?:\.py|\.mjs)?\s+ask\s+/g)) {
+  for (const m of line.matchAll(MAP_ASK)) {
     const rest = line.slice(m.index + m[0].length);
     const stop = /\d?>|\||;|&&|\n/.exec(rest); const words = rest.slice(0, stop ? stop.index : rest.length).trim().split(/\s+/).filter(Boolean);
     out.push(words.filter((w, k) => !w.startsWith('--') && (k === 0 || words[k - 1] !== '--in')).length);
@@ -118,8 +121,9 @@ function report(paths) {
 function main(args) {
   const si = args.indexOf('--since'); const since = si >= 0 ? args[si + 1] : '';
   const named = args.filter((a, k) => a !== '--since' && (k === 0 || args[k - 1] !== '--since'));
-  const slug = ROOT.split('/').join('-').split('.').join('-');
-  let folders = []; try { folders = fs.readdirSync(PROJECTS).filter(f => f.startsWith(slug)).map(f => path.join(PROJECTS, f)).filter(f => fs.statSync(f).isDirectory()); } catch { folders = []; }
+  const win = process.platform === 'win32';   // Windows: every character but a letter or a digit becomes '-' (C:\a\b is C--a-b), in either case of the drive letter
+  const slug = win ? ROOT.replace(/[^A-Za-z0-9]/g, '-').toLowerCase() : ROOT.split('/').join('-').split('.').join('-');
+  let folders = []; try { folders = fs.readdirSync(PROJECTS).filter(f => (win ? f.toLowerCase() : f).startsWith(slug)).map(f => path.join(PROJECTS, f)).filter(f => fs.statSync(f).isDirectory()); } catch { folders = []; }
   let found = folders.flatMap(f => fs.readdirSync(f).filter(x => x.endsWith('.jsonl')).map(x => path.join(f, x))).sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
   if (named.length) found = named.flatMap(a => (a.endsWith('.jsonl') ? [a] : found.filter(p => path.basename(p).startsWith(a))));
   if (!found.length) { process.stderr.write(`No transcripts for ${ROOT} under ${PROJECTS} (Claude Code writes them there).\n`); process.exit(1); }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
@@ -570,7 +571,15 @@ func ReadFile(p string) string {
 	if err != nil {
 		return ""
 	}
-	return strings.ToValidUTF8(string(b), "�")
+	return strings.ToValidUTF8(lf(string(b)), "�")
+}
+
+// lf: on Windows a file may come with CRLF (git's autocrlf); read as text, like Python, it has LF only.
+func lf(s string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(s, "\r\n", "\n")
+	}
+	return s
 }
 
 func IsFile(p string) bool {

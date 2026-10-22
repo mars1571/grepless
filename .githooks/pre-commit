@@ -3,6 +3,8 @@
 # Git runs it once core.hooksPath names this folder: make setup (git config core.hooksPath .githooks).
 set -e
 root=$(git rev-parse --show-toplevel)
+py=python3
+python3 -c pass > /dev/null 2>&1 || py=python     # Windows without the Python install manager has only python
 for dir in "$root" "$root/example"; do
-  (cd "$dir" && python3 "$root/python/map.py" build > /dev/null && git add -- map.yaml map && python3 "$root/python/map.py" check)
+  (cd "$dir" && $py "$root/python/map.py" build > /dev/null && git add -- map.yaml map && $py "$root/python/map.py" check)
 done

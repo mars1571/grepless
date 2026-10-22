@@ -144,12 +144,12 @@ SESSIONS = sorted((HERE / 'sessions').glob('*.jsonl'))   # two synthetic Claude 
 def hook_answers(guard, coach, sessions, root):
     """The guard on each agent's events, the coach on each agent's calls, the sessions on the two transcripts."""
     out = {}
-    (root / 'LICENSE').write_text('MIT License\n')                     # a file that is not code
+    write(root / 'LICENSE', 'MIT License\n')                           # a file that is not code
     for agent, (flag, event) in SHELL.items():
         steps = [(f'{label}: {c}', event(c)) for label, c in SHELL_DEMO] + TOOL_DEMO[agent]
         text = ''
         for label, data in steps:
-            answer, rc = run(guard, root, ['--agent', flag] if flag else [], stdin=json.dumps(data).replace('{root}', str(root)), extra={'MAP_ROOT': str(root)})
+            answer, rc = run(guard, root, ['--agent', flag] if flag else [], stdin=json.dumps(with_root(data, root)), extra={'MAP_ROOT': str(root)})
             text += f'== {label} (rc={rc})\n{shown(answer, root)}\n'
         out['guard-demo-' + agent] = text
     if coach:
@@ -187,8 +187,40 @@ def shown(text, root):
 
 
 # @map tests.conformance.run: each implementation run on a fresh copy of the example, its answers masked and compared with the golden files, or recorded
+def read(path):
+    return pathlib.Path(path).read_text(encoding='utf-8')
+
+
+def write(path, text):
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:      # LF on every system: Windows would write CRLF
+        f.write(text)
+
+
+def in_json(root):
+    """The root as it goes inside a JSON string: a Windows path carries backslashes."""
+    return json.dumps(str(root))[1:-1]
+
+
+def with_root(data, root):
+    """The event with {root} filled in at every level; Copilot's toolArgs is JSON inside a string, so there the root is
+    escaped once more (on macOS and Linux the result is the same as replacing it in the serialized event)."""
+    if isinstance(data, dict):
+        return {k: with_root(v, root) for k, v in data.items()}
+    if isinstance(data, list):
+        return [with_root(v, root) for v in data]
+    if isinstance(data, str):
+        return data.replace('{root}', in_json(root) if data.startswith('{"') else str(root))
+    return data
+
+
 def mask(text, root):
-    text = text.replace(os.path.realpath(root), '<root>').replace(str(root), '<root>')    # /var is /private/var on macOS
+    forms = {os.path.realpath(root), str(root)}                         # /var is /private/var on macOS
+    if os.name == 'nt':     # the root as Windows answers write it: with \ or /, escaped in JSON, quoted for the shell
+        forms |= {f.replace('\\', '/') for f in forms}
+        forms |= {json.dumps(f)[1:-1] for f in forms}
+        forms |= {"'" + f + "'" for f in forms}
+    for form in sorted(forms, key=len, reverse=True):
+        text = text.replace(form, '<root>')
     text = re.sub(r'changed \d{4}-\d{2}-\d{2} [0-9a-f]{7} ', 'changed <date> <hash> ', text)
     text = re.sub(r'^  [0-9a-f]{7} \d{4}-\d{2}-\d{2} ', '  <hash> <date> ', text, flags=re.M)
     text = re.sub(r'"\d{4}-\d{2}-\d{2} [0-9a-f]{7} ', '"<date> <hash> ', text)      # a commit in --json
@@ -199,10 +231,10 @@ def mask(text, root):
 def setup(tmp):
     root = tmp / 'example'
     shutil.copytree(REPO / 'example', root, ignore=shutil.ignore_patterns('map.yaml', 'map', '.git'))
-    cfg = json.loads((root / 'map.json').read_text())
+    cfg = json.loads(read(root / 'map.json'))
     cfg['command'] = 'python3 tools/map.py'
-    (root / 'map.json').write_text(json.dumps(cfg, indent=2) + '\n')
-    (root / 'plan.md').write_text(PLAN)
+    write(root / 'map.json', json.dumps(cfg, indent=2) + '\n')
+    write(root / 'plan.md', PLAN)
     env = {**os.environ, 'GIT_AUTHOR_DATE': '2026-10-16T12:00:00Z', 'GIT_COMMITTER_DATE': '2026-10-16T12:00:00Z'}
     subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
     subprocess.run(['git', 'add', '.'], cwd=root, check=True)
@@ -212,7 +244,8 @@ def setup(tmp):
 
 def run(impl, root, args, stdin=None, extra=None):
     cmd = impl.split() + list(args)
-    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, input=stdin, env={**os.environ, **(extra or {})})
+    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, encoding='utf-8', errors='replace', input=stdin,
+                       env={**os.environ, **(extra or {})})
     return (r.stdout + ('' if not r.stderr.strip() else '\n[stderr]\n' + r.stderr), r.returncode)
 
 
@@ -222,11 +255,11 @@ def answers(impl, guard, coach, sessions, root):
         text, rc = run(impl, root, ['--root', str(root)] + args)
         text = mask(text, root)
         if name == 'build':
-            text += '\n[map.yaml]\n' + (root / 'map.yaml').read_text() + ''.join(
-                f'\n[{p.name}]\n' + p.read_text() for p in sorted((root / 'map').glob('*.yaml')))
+            text += '\n[map.yaml]\n' + read(root / 'map.yaml') + ''.join(
+                f'\n[{p.name}]\n' + read(p) for p in sorted((root / 'map').glob('*.yaml')))
         out[name] = f'rc={rc}\n{text}'
     extra = root / 'src' / 'shop' / 'orders.py'
-    extra.write_text('import json\n\n\ndef place(cart):\n    return json.dumps(cart.lines)\n\n\nclass Order:\n    def __init__(self):\n        self.lines = []\n' * 20)
+    write(extra, 'import json\n\n\ndef place(cart):\n    return json.dumps(cart.lines)\n\n\nclass Order:\n    def __init__(self):\n        self.lines = []\n' * 20)
     for name, args in (('untagged-ask', ['ask', 'src/shop/orders.py', 'place']), ('untagged-gaps', ['gaps']), ('untagged-check', ['check'])):
         text, rc = run(impl, root, ['--root', str(root)] + args)
         out[name] = f'rc={rc}\n{mask(text, root)}'
@@ -234,7 +267,7 @@ def answers(impl, guard, coach, sessions, root):
     run(impl, root, ['--root', str(root), 'build'])
     if guard:
         for name, agent, data in GUARD_CASES:
-            payload = data if isinstance(data, str) else json.dumps(data).replace('{root}', str(root))
+            payload = data if isinstance(data, str) else json.dumps(with_root(data, root))
             text, rc = run(guard, root, (['--agent', agent] if agent else []), stdin=payload, extra={'MAP_ROOT': str(root)})
             try:
                 parsed = json.loads(text)
@@ -271,12 +304,12 @@ def main(argv):
         for old in GOLDEN.glob('*.txt'):
             old.unlink()
         for name, text in got.items():
-            (GOLDEN / f'{name}.txt').write_text(text)
+            write(GOLDEN / f'{name}.txt', text)
         print(f'{len(got)} golden answers written to {GOLDEN.relative_to(REPO)}')
         return 0
     failed = 0
     for name, text in got.items():
-        want = (GOLDEN / f'{name}.txt').read_text() if (GOLDEN / f'{name}.txt').exists() else None
+        want = read(GOLDEN / f'{name}.txt') if (GOLDEN / f'{name}.txt').exists() else None
         if want is None:
             print(f'{name}: no golden file (python3 tests/conformance.py --record)')
             failed += 1

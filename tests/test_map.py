@@ -15,9 +15,15 @@ REPO = HERE.parent
 TOOL = REPO / 'python' / 'map.py'
 
 
+def put(path, text):
+    """Text to a file as UTF-8 with LF line ends, on Windows too (Path.write_text has no newline argument before Python 3.10)."""
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+
+
 def run(root, *args, env=None):
     t = time.perf_counter()
-    r = subprocess.run(['python3', str(TOOL), '--root', str(root), *args], cwd=root, capture_output=True, text=True, env=env)
+    r = subprocess.run(['python3', str(TOOL), '--root', str(root), *args], cwd=root, capture_output=True, text=True, encoding='utf-8', env=env)
     return r.stdout + r.stderr, r.returncode, time.perf_counter() - t
 
 
@@ -27,9 +33,9 @@ class Example(unittest.TestCase):
         cls.tmp = pathlib.Path(tempfile.mkdtemp(prefix='map-example-'))
         cls.root = cls.tmp / 'example'
         shutil.copytree(REPO / 'example', cls.root, ignore=shutil.ignore_patterns('map.yaml', 'map'))
-        cfg = json.loads((cls.root / 'map.json').read_text())
+        cfg = json.loads((cls.root / 'map.json').read_text(encoding='utf-8'))
         cfg['command'] = 'python3 ' + str(TOOL)
-        (cls.root / 'map.json').write_text(json.dumps(cfg))
+        put(cls.root / 'map.json', json.dumps(cfg))
         subprocess.run(['git', 'init', '-q'], cwd=cls.root, check=True)
         subprocess.run(['git', 'add', '.'], cwd=cls.root, check=True)
         subprocess.run(['git', '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'the example'], cwd=cls.root, check=True)
@@ -44,23 +50,23 @@ class Example(unittest.TestCase):
         out, rc, _ = run(self.root, 'build')
         self.assertEqual(rc, 0, out)
         self.assertIn('12 blocks in 8 files, 6 components, 3 areas; 0 files without tags; 0 problems', out)
-        central = (self.root / 'map.yaml').read_text()
+        central = (self.root / 'map.yaml').read_text(encoding='utf-8')
         self.assertIn('shop: {holds: "the cart, the prices and the discounts", components: 2, files: 2, blocks: 4, map: map/shop.yaml, needs: {}, needed_by: {tests: 1}}', central)
         self.assertIn('tests: {holds: "the tests of the shop and of the page", components: 2, files: 2, blocks: 3, map: map/tests.yaml, needs: {shop: 1, web: 1}, needed_by: {}}', central)
-        shop = (self.root / 'map' / 'shop.yaml').read_text()
+        shop = (self.root / 'map' / 'shop.yaml').read_text(encoding='utf-8')
         self.assertIn('shop.cart: {what: "the cart: its lines, adding and removing articles, and what it holds", parts: [model, totals], files: ["src/shop/cart.py"], declares: [Cart, __init__, add, remove, is_empty, line_total, total, summary], needs: [shop.prices], needed_by: [tests.cart], tests: {tests: 1}, docs: [README.md, docs/CART.md]}', shop)
-        web = (self.root / 'map' / 'web.yaml').read_text()
+        web = (self.root / 'map' / 'web.yaml').read_text(encoding='utf-8')
         self.assertIn('files: ["src/web/cart.css", "src/web/cart.js", "src/web/index.html"]', web)     # one id, three files
         out, rc, _ = run(self.root, 'check')
         self.assertEqual(rc, 0, out)
         self.assertIn('12 blocks, 0 problems', out)
-        self.assertEqual((self.root / 'map.yaml').read_text(), central)                               # check writes nothing
+        self.assertEqual((self.root / 'map.yaml').read_text(encoding='utf-8'), central)                               # check writes nothing
 
     def test_check_fails_on_a_stale_map_and_a_broken_tag(self):
         run(self.root, 'build')
         path = self.root / 'src' / 'shop' / 'prices.py'
-        text = path.read_text()
-        path.write_text(text.replace('# @map shop.prices.list: the price of each article, by its code, in cents',
+        text = path.read_text(encoding='utf-8')
+        put(path, text.replace('# @map shop.prices.list: the price of each article, by its code, in cents',
                                      '# @map nowhere.prices.list: the price of each article, by its code, in cents'))
         try:
             out, rc, _ = run(self.root, 'check')
@@ -68,20 +74,20 @@ class Example(unittest.TestCase):
             self.assertIn('nowhere.prices.list: its first word is not an area', out)
             self.assertIn('out of date', out)
         finally:
-            path.write_text(text)
+            put(path, text)
         out, rc, _ = run(self.root, 'check')
         self.assertEqual(rc, 0, out)
 
     def test_a_rust_inner_attribute_is_not_a_shebang(self):
         rust = self.root / 'src' / 'shop' / 'lints.rs'
         script = self.root / 'src' / 'shop' / 'tool.py'
-        rust.write_text('// @map shop.lints.allow: the lints the example allows, an inner attribute below the tag\n'
+        put(rust, '// @map shop.lints.allow: the lints the example allows, an inner attribute below the tag\n'
                         '#![allow(dead_code)]\nfn unused() {}\n')
         try:
             run(self.root, 'build')
             out, rc, _ = run(self.root, 'check')
             self.assertEqual(rc, 0, out)                                                              # #![ is no shebang
-            script.write_text('# @map shop.tool.run: a script whose shebang line was pushed below its tag\n'
+            put(script, '# @map shop.tool.run: a script whose shebang line was pushed below its tag\n'
                               '#!/usr/bin/env python3\nprint(1)\n')
             run(self.root, 'build')
             out, rc, _ = run(self.root, 'check')
@@ -117,7 +123,7 @@ class Example(unittest.TestCase):
 
     def test_a_file_without_tags_is_answered_with_its_declarations(self):
         extra = self.root / 'src' / 'shop' / 'orders.py'
-        extra.write_text('import json\n\n\ndef place(cart):\n    return json.dumps(cart.lines)\n\n\nclass Order:\n    def __init__(self):\n        self.lines = []\n' * 20)
+        put(extra, 'import json\n\n\ndef place(cart):\n    return json.dumps(cart.lines)\n\n\nclass Order:\n    def __init__(self):\n        self.lines = []\n' * 20)
         try:
             run(self.root, 'build')
             out, rc, _ = run(self.root, 'ask', 'src/shop/orders.py')
@@ -130,7 +136,7 @@ class Example(unittest.TestCase):
             out, rc, _ = run(self.root, 'check')
             self.assertEqual(rc, 0, out)                                                            # not strict: the file is listed, not failed
             self.assertIn('1 files without tags', out)
-            self.assertIn('untagged:\n  # code files that carry no tag yet, by folder (python3 ', (self.root / 'map.yaml').read_text())
+            self.assertIn('untagged:\n  # code files that carry no tag yet, by folder (python3 ', (self.root / 'map.yaml').read_text(encoding='utf-8'))
         finally:
             extra.unlink()
             run(self.root, 'build')
@@ -232,7 +238,7 @@ class Example(unittest.TestCase):
         self.assertIn('map.json written: 3 areas detected', out)
         self.assertIn('Areas (code files each): web 4, shop 2, tests 2', out)
         self.assertIn('## Finding code', out)
-        cfg = json.loads((root / 'map.json').read_text())
+        cfg = json.loads((root / 'map.json').read_text(encoding='utf-8'))
         self.assertEqual(sorted(cfg['holds']), ['shop', 'tests', 'web'])
         out, rc, _ = run(root, 'build')
         self.assertEqual(rc, 0, out)
@@ -243,15 +249,15 @@ class Example(unittest.TestCase):
 # @map tests.map.agents: the section agents/AGENTS.md carries, and this repository's own AGENTS.md, is the one init prints
 class AgentsSection(unittest.TestCase):
     def section(self, cmd):
-        text = (REPO / 'python' / 'map.py').read_text()
+        text = (REPO / 'python' / 'map.py').read_text(encoding='utf-8')
         start = text.index('AGENTS_SECTION = """') + len('AGENTS_SECTION = """')
         return text[start:text.index('"""', start)].format(cmd=cmd)
 
     def test_the_pasted_section_is_the_one_init_prints(self):
-        self.assertIn(self.section('python3 tools/map.py'), (REPO / 'agents' / 'AGENTS.md').read_text())
+        self.assertIn(self.section('python3 tools/map.py'), (REPO / 'agents' / 'AGENTS.md').read_text(encoding='utf-8'))
 
     def test_this_repository_reads_itself_with_the_same_section(self):
-        self.assertIn(self.section('python3 python/map.py'), (REPO / 'AGENTS.md').read_text())
+        self.assertIn(self.section('python3 python/map.py'), (REPO / 'AGENTS.md').read_text(encoding='utf-8'))
 # @end tests.map.agents
 
 

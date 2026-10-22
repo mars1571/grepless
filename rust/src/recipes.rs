@@ -81,7 +81,7 @@ pub fn recipe_problems(blocks: &[Block]) -> Vec<Problem> {
 const SHARED: [&str; 5] = ["map/", "map.yaml", "CHANGELOG", "changes/", "docs/plans/"];
 
 pub fn plan(path: &str) {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{}: {}", path, e)));
+    let text = newlines(std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{}: {}", path, e))));
     let part_rx = Regex::new(r"^## Part (\d+)\b[:.\s-]*(.*)").unwrap();
     let files_rx = Regex::new(r"^\s*-\s*Files:(.*)").unwrap();
     let split = Regex::new(r"[\s,]+").unwrap();

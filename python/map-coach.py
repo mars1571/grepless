@@ -24,13 +24,16 @@ import sys
 import tempfile
 import time
 
+if os.name == 'nt' and hasattr(sys.stdin, 'reconfigure'):     # Windows: the agent's JSON is UTF-8 (the default is the ANSI code page)
+    sys.stdin.reconfigure(encoding='utf-8')
+
 DIR = os.environ.get('MAP_COACH_DIR') or os.path.join(tempfile.gettempdir(), 'map-coach')
 READS = ('Three reads of the map in a row (AGENTS.md, "Finding code"): ask in one call every question you can already '
          'name, the blocks, names and line ranges these answers point to, and send the calls that do not depend on each '
          'other in one message.')
 QUIET = ('head', 'tail', 'cut', 'wc', 'echo', 'grep', 'sort', 'uniq')
 SHELL = ('Bash', 'bash', 'powershell', 'Shell', 'run_shell_command')     # each agent's shell tool
-MAP = re.compile(r'map(?:\.py|\.mjs)$|(?:^|/)map$')                       # tools/map.py, tools/map.mjs, tools/map
+MAP = re.compile((r'map(?:\.py|\.mjs|\.exe)$' if os.name == 'nt' else r'map(?:\.py|\.mjs)$') + r'|(?:^|/)map$')   # tools/map.py, tools/map.mjs, tools/map (Windows: tools/map.exe)
 AGAIN = 5                                                                 # seconds: the same call twice is one call
 
 

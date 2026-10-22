@@ -61,6 +61,13 @@ python3 tools/map-guard.py install claude
 python3 tools/map.py check
 ```
 
+**On Windows**, run `install.sh` and the hooks in Git Bash, which Git for Windows installs: the `curl ... | sh` line
+above works there as on Linux. The Go and Rust programs are `tools/map.exe` and so on, while `map.json` keeps the
+command `tools/map`, which Git Bash resolves, so the file reads the same on every system. `python3` comes with the
+[Python install manager](https://docs.python.org/3/using/windows.html); a python.org installer gives only `python`,
+and then `install.sh` writes `python tools/map.py` as the command. This repository's `.gitattributes` keeps LF in a
+Windows clone.
+
 With the Go or Rust version, the commands are `tools/map`, `tools/map-guard` and so on. **Without Go or Rust on
 the machine**, `--lang go` and `--lang rust` download the binaries for its system from the
 [latest release](https://github.com/mars1571/grepless/releases/latest) instead (macOS and Linux on arm64 and

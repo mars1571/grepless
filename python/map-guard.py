@@ -27,10 +27,23 @@ call go ahead. Python 3.9 or later, the standard library only; map.json (at the 
 run (`command`) and the paths the guard leaves alone (`guard.skip`, `ignore`).
 """
 import fnmatch
+import functools
 import json
 import os
+import posixpath
 import re
 import sys
+
+if os.name == 'nt':     # Windows: UTF-8 in and out, and LF out, as elsewhere (the default is the ANSI code page and CRLF)
+    for _s in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(_s, 'reconfigure'):
+            _s.reconfigure(encoding='utf-8', **({} if _s is sys.stdin else {'newline': '\n'}))
+
+
+def root_form(p):
+    """The root in the form realpath gives the paths under it: canonical on Windows (the drive letter's case, no \\\\?\\),
+    and as found elsewhere."""
+    return os.path.realpath(p) if os.name == 'nt' else p
 
 
 def find_root():
@@ -42,12 +55,12 @@ def find_root():
             base = start
             while True:
                 if os.path.exists(os.path.join(base, mark)):
-                    return base
+                    return root_form(base)
                 up = os.path.dirname(base)
                 if up == base:
                     break
                 base = up
-    return os.getcwd()
+    return root_form(os.getcwd())
 
 
 ROOT = find_root()
@@ -86,10 +99,45 @@ NOTE = ('map-guard ran this line through the map, each read of the code or the d
         'next time, ask every question of a round in one call):\n  ')
 
 
+def msys_path(p):
+    """A Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); None on other systems and for any other path."""
+    if os.name != 'nt':
+        return None
+    m = re.fullmatch(r'(?:/cygdrive)?/([A-Za-z])(/.*)?', p, re.S)
+    return m and f'{m.group(1).upper()}:{m.group(2) or "/"}'
+
+
+def expanduser(p):
+    """os.path.expanduser; on Windows $HOME (else the profile) for a leading ~, and Git Bash's drive paths as Windows names them."""
+    if os.name != 'nt':
+        return os.path.expanduser(p)
+    if p.startswith('~'):
+        home = os.environ.get('HOME') or os.environ.get('USERPROFILE')
+        if home:
+            return os.path.join(msys_path(home) or home, p[1:].lstrip('/'))
+    return msys_path(p) or p
+
+
+def normpath(p):
+    """os.path.normpath; on Windows with `/`, which the bash of the agent's lines reads as it is (it takes a backslash for an escape)."""
+    p = os.path.normpath(p)
+    return p.replace('\\', '/') if os.name == 'nt' else p
+
+
+def root_word():
+    """The root as a word of the shell line: on Windows with `/`, which bash reads as it is."""
+    return quote_word(ROOT.replace('\\', '/') if os.name == 'nt' else ROOT)
+
+
 def inside(path, base):
     """The path relative to the repository, or None when it is outside it."""
-    full = os.path.realpath(os.path.join(base, os.path.expanduser(path)))
-    rel = os.path.relpath(full, ROOT)
+    full = os.path.realpath(os.path.join(base, expanduser(path)))
+    if os.name == 'nt':
+        if os.path.splitdrive(full)[0].lower() != os.path.splitdrive(ROOT)[0].lower():
+            return None                                       # another drive: there is no relative path to it
+        rel = os.path.relpath(full, ROOT).replace('\\', '/')   # agents write `/` on Windows too
+    else:
+        rel = os.path.relpath(full, ROOT)
     return None if rel.startswith('..') else rel
 
 
@@ -107,7 +155,7 @@ def ignored(rel):
         IGNORED.extend(p.strip() for p in lines if p.strip() and not p.startswith('#'))
         IGNORED.extend(SKIPPED)
         IGNORED.append('')                                    # read once, even when empty
-    parts = rel.split(os.sep)
+    parts = rel.split('/')
     if any(p in SKIP for p in parts[:-1]) or parts[0] in SKIP:
         return True
     for p in IGNORED:
@@ -115,7 +163,7 @@ def ignored(rel):
             continue
         folder, q = p.endswith('/'), p.strip('/')
         if '/' in q:
-            if rel == q or rel.startswith(q + os.sep) or fnmatch.fnmatch(rel, q):
+            if rel == q or rel.startswith(q + '/') or fnmatch.fnmatch(rel, q):
                 return True
         elif any(fnmatch.fnmatch(n, q) for n in (parts[:-1] if folder and not os.path.isdir(os.path.join(ROOT, rel)) else parts)):
             return True
@@ -148,21 +196,43 @@ def expand(rel):
 
 
 def mapped(rel, folder_ok=True):
-    """Whether the map answers for this path: a text file of the repository, or a folder holding them."""
+    """Whether the map answers for this path: a text file of the repository, or a folder holding one."""
     if rel is None:
         return False
     if re.search(r'[*?[]', rel):
         return any(mapped(x, folder_ok) for x in expand(rel)[:50])
     if rel == '.':
         return folder_ok
-    if rel in ('map.yaml',) or rel.split(os.sep)[0] == 'map':
+    if rel in ('map.yaml',) or rel.split('/')[0] == 'map':
         return False
     full = os.path.join(ROOT, rel)
     if os.path.isdir(full):
-        return folder_ok and not ignored(rel)
+        return folder_ok and not ignored(rel) and holds_mapped(rel)
     if not os.path.exists(full):
         return False
     return is_text(rel) and not ignored(rel)
+
+
+# @map map.guard.scope.folder: whether a folder holds a file the map reads (one that holds none is never sent to an ask)
+FOLDER_SEEN = 50000                                     # files looked at in a folder; past them it is taken to hold one
+
+
+@functools.lru_cache(maxsize=None)
+def holds_mapped(rel):
+    """Whether a folder holds a file the map reads, below the folders it leaves out: one that holds none is not sent to
+    an ask, which would answer nothing."""
+    seen = 0
+    for base, dirs, names in os.walk(os.path.join(ROOT, rel)):
+        here = os.path.relpath(base, ROOT).replace(os.sep, '/')
+        dirs[:] = sorted(d for d in dirs if d not in SKIP and not ignored(f'{here}/{d}'))
+        for n in names:
+            seen += 1
+            if is_text(f'{here}/{n}') and not ignored(f'{here}/{n}'):
+                return True
+        if seen > FOLDER_SEEN:
+            return True
+    return False
+# @end map.guard.scope.folder
 
 
 SAFE = re.compile(r'^[A-Za-z0-9@%+=:,./_-]+$')
@@ -284,7 +354,7 @@ def commands(line, cwd):
         if t in ('|', '||', '&&', ';', '&', '(', ')', '|&', ';;', '\n'):
             if words:
                 if words[0] == 'cd' and len(words) > 1:
-                    base = os.path.join(base, os.path.expanduser(words[1]))
+                    base = os.path.join(base, expanduser(words[1]))
                 else:
                     out.append((words, piped, base))
             piped, words = t in ('|', '|&'), []
@@ -334,7 +404,7 @@ def grep_question(words, base):
         return None
     places = [r for r in rels if r and r != '.']
     if includes:
-        places = [os.path.join(p, '*' + g.lstrip('*')) for p in (places or ['']) for g in includes]
+        places = [posixpath.join(p, '*' + g.lstrip('*')) for p in (places or ['']) for g in includes]
         places = [p.lstrip('/') for p in places]
     pattern = '|'.join(pats)
     if '@map' in pattern:
@@ -447,7 +517,7 @@ def list_question(words, base):
         rel = inside(roots[0], base)
         if not mapped(rel) or rel == '.' and not pattern:
             return None
-        return [os.path.join('' if rel == '.' else rel, '*' + pattern.lstrip('*')) if pattern else rel]
+        return [posixpath.join('' if rel == '.' else rel, '*' + pattern.lstrip('*')) if pattern else rel]
     rels = [inside(a, base) for a in args]
     return [r for r in rels if mapped(r) and r != '.'] or None
 
@@ -504,7 +574,7 @@ def scripts(line, cwd):
     for words, _, base in commands(line, cwd):
         if os.path.basename(words[0]) in ('node', 'python', 'python3') and len(words) > 1 and not words[1].startswith('-'):
             name = expand_(words[1])
-            f = os.path.join(base, os.path.expanduser(name))
+            f = os.path.join(base, expanduser(name))
             if inside(name, base) is None and os.path.isfile(f) and os.path.getsize(f) < 300000:
                 with open(f, encoding='utf-8', errors='replace') as script:
                     out.append(script.read())
@@ -699,7 +769,7 @@ def steps(line, cwd):
         out.append(step)
         if kind == 'cd':
             target = words[1] if len(words) == 2 else None
-            base = None if target is None or '$' in target or target == '-' else os.path.normpath(os.path.join(base, os.path.expanduser(target)))
+            base = None if target is None or '$' in target or target == '-' else normpath(os.path.join(base, expanduser(target)))
         if base is None and k + 1 < len(segs):
             return None
     return out
@@ -707,7 +777,7 @@ def steps(line, cwd):
 
 def anchored(base, text):
     """The text run in the folder it was written for: as it is at the root, else in a (cd root && …) of its own."""
-    return text if os.path.realpath(base) == os.path.realpath(ROOT) else f'(cd {quote_word(ROOT)} && {text})'
+    return text if os.path.realpath(base) == os.path.realpath(ROOT) else f'(cd {root_word()} && {text})'
 
 
 # @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
@@ -716,7 +786,7 @@ def git_read_only(words, base):
     args, i = words[1:], 0
     while i < len(args) and args[i].startswith('-'):
         if args[i] == '-C' and i + 1 < len(args):
-            base, i = os.path.join(base, os.path.expanduser(args[i + 1])), i + 2
+            base, i = os.path.join(base, expanduser(args[i + 1])), i + 2
         elif args[i] in ('--no-pager', '--no-optional-locks'):
             i += 1
         else:
@@ -890,7 +960,7 @@ def rewrite(line, cwd):
     built = rebuild(line, cwd, True)
     if not built or not built[1] or not built[2]:
         return None
-    return f'(cd {quote_word(ROOT)} && ' + built[0].strip() + ')'
+    return f'(cd {root_word()} && ' + built[0].strip() + ')'
 
 
 def resend(line, cwd):
@@ -909,6 +979,47 @@ def read_question_tool(file_path, cwd, offset=None, limit=None):
     if not mapped(rel, folder_ok=False) or limit or offset:
         return None
     return ASK + quote([rel])
+
+
+# @map map.guard.decide.glob: the ask for a Glob, only when the map holds a file the pattern names (never an ask that answers 0 files)
+GLOB_WILD = re.compile(r'[*?[{]')
+GLOB_SEEN = 50000                                       # files looked at for a match; past them the call goes ahead
+
+
+def glob_question(folder, pattern, cwd):
+    """The ask for a Glob, or None when it goes ahead, as a Grep, a Read or a shell line on the same place does. The
+    pattern is split at its first wildcard segment (* ? [ {): the literal folder before it, under the tool's folder, must
+    be a place the map reads (inside the repository, not ignored, not the map's own), and the pattern, matched as ask
+    matches it (fnmatch on the path less its leading . and /), must name a file the map reads there. A pattern with
+    no wildcard is that file or folder."""
+    pat = expanduser(pattern)
+    if os.name == 'nt':
+        pat = pat.replace('\\', '/')                    # a Windows pattern may use either separator
+    parts = pat.split('/')
+    k = next((i for i, s in enumerate(parts) if GLOB_WILD.search(s)), len(parts))
+    lit = '/'.join(parts[:k]) or ('/' if pat.startswith('/') else '')
+    rel = inside(os.path.join(folder, lit + '/' if re.fullmatch(r'[A-Za-z]:', lit) else lit), cwd)
+    if rel is None:
+        return None
+    rest = '/'.join(parts[k:])
+    if not rest:
+        return ASK + quote([rel]) if mapped(rel) and rel != '.' else None
+    q = posixpath.join('' if rel == '.' else rel, rest)
+    if not mapped(rel) or '/' not in q or not re.search(r'[*?]', q) or re.search(r'[\\|()+^$]', q):
+        return None                                     # ignored, or a pattern that ask does not read as a glob
+    want, seen = q.lstrip('./'), 0
+    for base, dirs, names in os.walk(os.path.join(ROOT, rel)):
+        here = os.path.relpath(base, ROOT).replace(os.sep, '/')
+        dirs[:] = sorted(d for d in dirs if d not in SKIP and not ignored(d if here == '.' else f'{here}/{d}'))
+        for n in names:
+            path = n if here == '.' else f'{here}/{n}'
+            seen += 1
+            if fnmatch.fnmatch(path, want) and mapped(path, folder_ok=False):
+                return ASK + quote([q])
+        if seen > GLOB_SEEN:
+            break
+    return None
+# @end map.guard.decide.glob
 
 
 def normalise(agent, data):
@@ -965,8 +1076,7 @@ def replacement(agent, data):
         q = grep_question(words, cwd)
         return ASK + quote(q) if q else None
     if kind == 'glob':
-        rel = inside(folder, cwd)
-        return ASK + quote([os.path.join('' if rel in (None, '.') else rel, given.get('pattern', ''))]) if mapped(rel) else None
+        return glob_question(folder, given.get('pattern') or '', cwd)
     if kind == 'list':
         rel = inside(folder, cwd)
         return ASK + quote([rel]) if mapped(rel) and rel != '.' else None
@@ -1020,7 +1130,9 @@ SETTINGS = {
         'beforeShellExecution': [{'command': f'python3 {me} --agent cursor'}],
         'beforeReadFile': [{'command': f'python3 {me} --agent cursor'}]}}),
     'copilot': ('.github/hooks/map-guard.json', lambda me: {'version': 1, 'hooks': {'preToolUse': [
-        {'type': 'command', 'bash': f'python3 {me} --agent copilot', 'cwd': '.', 'timeoutSec': 10}]}}),     # cwd: the repository's root
+        {'type': 'command', 'bash': f'python3 {me} --agent copilot',
+         **({'powershell': f'python3 {me} --agent copilot'} if os.name == 'nt' else {}),                         # Windows: PowerShell too
+         'cwd': '.', 'timeoutSec': 10}]}}),                                                                      # cwd: the repository's root
     'gemini': ('.gemini/settings.json', lambda me: {'hooks': {'BeforeTool': [{'matcher': 'run_shell_command|read_file|read_many_files|grep_search|glob|list_directory', 'hooks': [
         {'name': 'map-guard', 'type': 'command', 'command': f'python3 "$GEMINI_PROJECT_DIR/{me}" --agent gemini', 'timeout': 5000}]}]}}),
 }
@@ -1041,7 +1153,9 @@ def merge(old, new):
 def install(agent):
     if agent not in SETTINGS:
         sys.exit(f'install <agent>: one of {", ".join(SETTINGS)}')
-    me = os.path.relpath(os.path.realpath(__file__), os.path.realpath(ROOT)).replace(os.sep, '/')   # links resolved on both sides
+    here, top = os.path.realpath(__file__), os.path.realpath(ROOT)                  # links resolved on both sides
+    me = (here if os.name == 'nt' and os.path.splitdrive(here)[0].lower() != os.path.splitdrive(top)[0].lower()
+          else os.path.relpath(here, top)).replace(os.sep, '/')                      # on another drive: the full path
     path, make = SETTINGS[agent]
     full = os.path.join(ROOT, path)
     try:
@@ -1051,7 +1165,7 @@ def install(agent):
         old = {}
     new = merge(old, make(me))
     os.makedirs(os.path.dirname(full), exist_ok=True)
-    with open(full, 'w', encoding='utf-8') as f:
+    with open(full, 'w', encoding='utf-8', newline='\n') as f:                      # LF on every system
         json.dump(new, f, indent=2, ensure_ascii=False)
         f.write('\n')
     print(f'{path}: the map guard installed for {agent} ({me}).' + (' Codex runs project hooks once the .codex folder is trusted.' if agent == 'codex' else ''))

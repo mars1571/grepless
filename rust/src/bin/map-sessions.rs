@@ -7,12 +7,13 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+fn script_ext() -> &'static str { if cfg!(windows) { r"(?:\.py|\.mjs|\.exe)?" } else { r"(?:\.py|\.mjs)?" } }
 fn looks(tool: &str, given: &Value) -> Option<&'static str> {
     if matches!(tool, "Read" | "Grep" | "Glob") { return Some("other"); }
     if tool != "Bash" { return None; }
     let look: HashSet<&str> = "grep egrep fgrep rg ag ack cat sed head tail awk nl less more ls find tree wc cut sort uniq tr xargs column echo printf".split(' ').collect();
     let mut line = given.get("command").and_then(|c| c.as_str()).unwrap_or("").to_string();
-    if Regex::new(r"map(?:\.py|\.mjs)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b").unwrap().is_match(&line) { return Some("map"); }
+    if Regex::new(&format!(r"map{}\s+(ask|brief|find|history|deps|impact|recipe|where)\b", script_ext())).unwrap().is_match(&line) { return Some("map"); }
     line = Regex::new(r"\d?>&\d|\d?>\s*/dev/null").unwrap().replace_all(&line, " ").to_string();
     if Regex::new(r"\bsed\s+-i|>\s*\S|\bnode\b|\bmake\b|\bnpx\b").unwrap().is_match(&line) { return None; }
     for m in Regex::new(r"\bpython3?\s+(\S*)").unwrap().captures_iter(&line) { if !m[1].ends_with("map.py") { return None; } }
@@ -23,7 +24,7 @@ fn looks(tool: &str, given: &Value) -> Option<&'static str> {
 }
 
 fn questions(line: &str) -> Vec<usize> {
-    let ask = Regex::new(r"map(?:\.py|\.mjs)?\s+ask\s+").unwrap();
+    let ask = Regex::new(&format!(r"map{}\s+ask\s+", script_ext())).unwrap();
     let stop = Regex::new(r"\d?>|\||;|&&|\n").unwrap();   // a redirection, a pipe or the next step
     ask.find_iter(line).map(|m| {
         let rest = &line[m.end()..];
@@ -229,13 +230,17 @@ fn main() {
     while i < args.len() {
         if args[i] == "--since" && i + 1 < args.len() { since = args[i + 1].clone(); i += 2; } else { named.push(args[i].clone()); i += 1; }
     }
-    let home = std::env::var("HOME").unwrap_or_default();
+    // Windows: under USERPROFILE; a project's folder is its path with each non-alphanumeric a `-`, the drive letter in any case
+    let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).or_else(|_| std::env::var("HOME")).unwrap_or_default();
     let projects = PathBuf::from(home).join(".claude").join("projects");
-    let slug = guard::g().root.to_string_lossy().replace(['/', '.'], "-");
+    let root = guard::g().root.to_string_lossy().to_string();
+    let slug = if cfg!(windows) { root.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect::<String>() } else { root.replace(['/', '.'], "-") };
     let mut found: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&projects) {
         for e in entries.flatten() {
-            if e.file_name().to_string_lossy().starts_with(&slug) && e.path().is_dir() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let name = if cfg!(windows) { name.to_ascii_lowercase() } else { name };
+            if name.starts_with(&slug) && e.path().is_dir() {
                 for f in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
                     if f.file_name().to_string_lossy().ends_with(".jsonl") { found.push(f.path()); }
                 }

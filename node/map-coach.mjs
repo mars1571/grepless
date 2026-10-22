@@ -12,7 +12,7 @@ const READS = 'Three reads of the map in a row (AGENTS.md, "Finding code"): ask 
   + 'name, the blocks, names and line ranges these answers point to, and send the calls that do not depend on each other in one message.';
 const QUIET = new Set(['head', 'tail', 'cut', 'wc', 'echo', 'grep', 'sort', 'uniq']);
 const SHELL = new Set(['Bash', 'bash', 'powershell', 'Shell', 'run_shell_command']);
-const MAP = /map(?:\.py|\.mjs)$|(?:^|\/)map$/;
+const MAP = process.platform === 'win32' ? /map(?:\.py|\.mjs|\.exe)$|(?:^|\/)map$/ : /map(?:\.py|\.mjs)$|(?:^|\/)map$/;   // Windows: tools/map.exe too
 const AGAIN = 5;
 
 function kind(tool, given) {

@@ -1,4 +1,13 @@
 # @map map.install: the four implementations built and tested from one place: go and rust compiled, the unit tests, the conformance of each, the whole suite once, the git hook set up, the benchmark
+# On Windows (GNU make run from Git Bash) the compiled programs are name.exe, and the native programs (python3, node) read
+# the repository's path as Windows writes it (C:/...), not as an MSYS make gives it (/c/...).
+EXE :=
+ROOT := $(CURDIR)
+ifeq ($(OS),Windows_NT)
+EXE := .exe
+ROOT := $(shell cygpath -m '$(CURDIR)')
+endif
+
 .PHONY: help setup test conformance go rust bench map check
 
 help:
@@ -21,16 +30,16 @@ test:
 	python3 tests/conformance.py
 
 go:
-	cd go && for b in map map-guard map-coach map-sessions; do go build -o bin/$$b ./cmd/$$b || exit 1; done
+	cd go && for b in map map-guard map-coach map-sessions; do go build -o bin/$$b$(EXE) ./cmd/$$b || exit 1; done
 
 rust:
 	cd rust && cargo build --release
 
 conformance:
 	python3 tests/conformance.py
-	python3 tests/conformance.py --impl "node $(CURDIR)/node/map.mjs" --guard "node $(CURDIR)/node/map-guard.mjs"
-	@if [ -x go/bin/map ]; then python3 tests/conformance.py --impl "$(CURDIR)/go/bin/map" --guard "$(CURDIR)/go/bin/map-guard"; else echo "go: not built (make go)"; fi
-	@if [ -x rust/target/release/map ]; then python3 tests/conformance.py --impl "$(CURDIR)/rust/target/release/map" --guard "$(CURDIR)/rust/target/release/map-guard"; else echo "rust: not built (make rust)"; fi
+	python3 tests/conformance.py --impl "node $(ROOT)/node/map.mjs" --guard "node $(ROOT)/node/map-guard.mjs"
+	@if [ -x go/bin/map$(EXE) ]; then python3 tests/conformance.py --impl "$(ROOT)/go/bin/map$(EXE)" --guard "$(ROOT)/go/bin/map-guard$(EXE)"; else echo "go: not built (make go)"; fi
+	@if [ -x rust/target/release/map$(EXE) ]; then python3 tests/conformance.py --impl "$(ROOT)/rust/target/release/map$(EXE)" --guard "$(ROOT)/rust/target/release/map-guard$(EXE)"; else echo "rust: not built (make rust)"; fi
 
 bench:
 	python3 bench/run.py

@@ -1,0 +1,16 @@
+# Text files are checked out with LF on every system. Git for Windows defaults to core.autocrlf=true, which would
+# turn the clone's files into CRLF: install.sh and .githooks/pre-commit would not run (sh reads "\r" as part of a
+# word), and tests/golden/ would differ from what the tool prints (LF) in every answer. The files are LF in the
+# repository already (git ls-files --eol), so this changes nothing on macOS or Linux.
+* text=auto eol=lf
+
+# Binary files, so that no line-ending rule ever touches them.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.exe binary

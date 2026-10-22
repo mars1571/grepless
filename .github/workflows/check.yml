@@ -1,12 +1,21 @@
 # @map ci.check: the unit tests on Python 3.9 and 3.12, this map and the example's current, and the four implementations: built clean, against the golden answers (map, guard, coach, sessions), installed in each language and from a release
 name: check
 on: [push, pull_request]
+# Git Bash on Windows, bash elsewhere: the steps below are shell and read the same on the three systems.
+defaults:
+  run:
+    shell: bash
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ['3.9', '3.12']
+        exclude:      # Python 3.9 on Linux only: macOS and Windows run the current one
+          - {os: macos-latest, python: '3.9'}
+          - {os: windows-latest, python: '3.9'}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -14,23 +23,43 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+      - name: python3 on Windows, which the commands below name
+        if: runner.os == 'Windows'
+        run: |
+          p=$(command -v python); p=${p%.exe}
+          command -v python3 > /dev/null || cp "$p.exe" "$(dirname "$p")/python3.exe"
       - run: python3 -m unittest discover -s tests -v
       - run: python3 python/map.py check
       - run: cd example && python3 ../python/map.py check
       - run: python3 tests/conformance.py
   implementations:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: EXE (.exe on Windows) and ROOT (the checkout as native programs read it, C:/... on Windows)
+        run: |
+          exe=
+          if [ "$RUNNER_OS" = Windows ]; then exe=.exe; fi
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+          echo "ROOT=$(pwd -W 2>/dev/null || pwd)" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+      - name: python3 on Windows, which the commands below name
+        if: runner.os == 'Windows'
+        run: |
+          p=$(command -v python); p=${p%.exe}
+          command -v python3 > /dev/null || cp "$p.exe" "$(dirname "$p")/python3.exe"
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - run: python3 tests/conformance.py --impl "node $PWD/node/map.mjs" --guard "node $PWD/node/map-guard.mjs"
+      - run: python3 tests/conformance.py --impl "node $ROOT/node/map.mjs" --guard "node $ROOT/node/map-guard.mjs"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go/go.mod
@@ -38,10 +67,10 @@ jobs:
       - name: go, built, vetted and formatted
         run: |
           cd go
-          for b in map map-guard map-coach map-sessions; do go build -o bin/$b ./cmd/$b; done
+          for b in map map-guard map-coach map-sessions; do go build -o bin/$b$EXE ./cmd/$b; done
           go vet ./...
           test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - run: python3 tests/conformance.py --impl "$PWD/go/bin/map" --guard "$PWD/go/bin/map-guard"
+      - run: python3 tests/conformance.py --impl "$ROOT/go/bin/map$EXE" --guard "$ROOT/go/bin/map-guard$EXE"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -50,28 +79,36 @@ jobs:
           cd rust
           RUSTFLAGS=-Dwarnings cargo build --release --locked
           cargo clippy --release --locked -- -D warnings
-      - run: python3 tests/conformance.py --impl "$PWD/rust/target/release/map" --guard "$PWD/rust/target/release/map-guard"
+      - run: python3 tests/conformance.py --impl "$ROOT/rust/target/release/map$EXE" --guard "$ROOT/rust/target/release/map-guard$EXE"
       - name: install.sh in each language on a copy of example/, then brief, ask, build, check and the guard installed
         run: |
+          tmp=$(cd "$RUNNER_TEMP" && pwd)
           for lang in python node go rust; do
-            t=$RUNNER_TEMP/install-$lang
+            t=$tmp/install-$lang
             cp -R example "$t"
             sh install.sh --lang "$lang" "$t" > "$t.log"
-            cmd=$(sed -n 's/.*Its command: //p' "$t.log")
-            guard=$(sed -n 's/.*install the guard: \(.*\) install <agent>\./\1/p' "$t.log")
+            cmd=$(sed -n 's/.*Its command: //p' "$t.log" | tr -d '\r')
+            guard=$(sed -n 's/.*install the guard: \(.*\) install <agent>\./\1/p' "$t.log" | tr -d '\r')
             (cd "$t" && $cmd brief cart discount > /dev/null && $cmd ask shop.cart.totals coupon > /dev/null && $cmd build && $cmd check && $guard install claude)
           done
       - name: install.sh without Go or Rust, from a local copy of the release that release.yml publishes
         run: |
-          d=$RUNNER_TEMP/release
-          sh .github/pack.sh go linux x86_64 go/bin "$d"
-          sh .github/pack.sh rust linux x86_64 rust/target/release "$d"
-          (cd "$d" && sha256sum grepless-* > SHA256SUMS)
+          case "$RUNNER_OS" in macOS) os=darwin ;; Windows) os=windows ;; *) os=linux ;; esac
+          case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; *) arch=x86_64 ;; esac
+          tmp=$(cd "$RUNNER_TEMP" && pwd)
+          d=$tmp/release
+          sh .github/pack.sh go "$os" "$arch" go/bin "$d"
+          sh .github/pack.sh rust "$os" "$arch" rust/target/release "$d"
+          (cd "$d" && { sha256sum grepless-* 2>/dev/null || shasum -a 256 grepless-*; } > SHA256SUMS)
           python3 -m http.server 8765 --bind 127.0.0.1 --directory "$d" > /dev/null 2>&1 &
           sleep 2
+          path=/usr/bin:/bin
+          if [ "$RUNNER_OS" = Windows ]; then     # curl lives outside /usr/bin there: the whole PATH, minus the folders holding go or cargo
+            path=$(IFS=:; sep=; for p in $PATH; do [ -e "$p/go.exe" ] || [ -e "$p/cargo.exe" ] || { printf '%s%s' "$sep" "$p"; sep=:; }; done)
+          fi
           for impl in go rust; do
-            t=$RUNNER_TEMP/prebuilt-$impl
+            t=$tmp/prebuilt-$impl
             cp -R example "$t"
-            env PATH=/usr/bin:/bin MAP_RELEASES=http://127.0.0.1:8765 sh install.sh --lang "$impl" "$t" | grep 'SHA-256 checked'
+            env PATH="$path" MAP_RELEASES=http://127.0.0.1:8765 sh install.sh --lang "$impl" "$t" | grep 'SHA-256 checked'
             (cd "$t" && tools/map build && tools/map check)
           done

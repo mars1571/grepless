@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -18,12 +19,21 @@ import (
 )
 
 var look = map[string]bool{}
-var mapCall = regexp.MustCompile(`map(?:\.py|\.mjs)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b`)
+var mapx = mapExt() // how a line names the map; Windows: tools/map.exe too
+var mapCall = regexp.MustCompile(`map` + mapx + `\s+(ask|brief|find|history|deps|impact|recipe|where)\b`)
 var quietRx = regexp.MustCompile(`\d?>&\d|\d?>\s*/dev/null`)
 var notRead = regexp.MustCompile(`\bsed\s+-i|>\s*\S|\bnode\b|\bmake\b|\bnpx\b`)
 var pyCall = regexp.MustCompile(`\bpython3?\s+(\S*)`)
-var askRx = regexp.MustCompile(`map(?:\.py|\.mjs)?\s+ask\s+`)
+var nonAlnum = regexp.MustCompile(`[^A-Za-z0-9]`)
+var askRx = regexp.MustCompile(`map` + mapx + `\s+ask\s+`)
 var stopRx = regexp.MustCompile(`\d?>|\||;|&&|\n`) // a redirection, a pipe or the next step
+
+func mapExt() string {
+	if runtime.GOOS == "windows" {
+		return `(?:\.py|\.mjs|\.exe)?`
+	}
+	return `(?:\.py|\.mjs)?`
+}
 
 func init() {
 	for _, w := range strings.Fields("grep egrep fgrep rg ag ack cat sed head tail awk nl less more ls find tree wc cut sort uniq tr xargs column echo printf") {
@@ -488,10 +498,14 @@ func main() {
 	home, _ := os.UserHomeDir()
 	projects := filepath.Join(home, ".claude", "projects")
 	slug := strings.ReplaceAll(strings.ReplaceAll(guard.ROOT, "/", "-"), ".", "-")
+	windows := runtime.GOOS == "windows"
+	if windows { // Claude Code writes C:\Github\mars as c--Github-mars: every character that is not a letter or a digit is a `-`
+		slug = nonAlnum.ReplaceAllString(guard.ROOT, "-")
+	}
 	var found []string
 	if entries, err := os.ReadDir(projects); err == nil {
 		for _, e := range entries {
-			if e.IsDir() && strings.HasPrefix(e.Name(), slug) {
+			if e.IsDir() && (strings.HasPrefix(e.Name(), slug) || windows && strings.HasPrefix(strings.ToLower(e.Name()), strings.ToLower(slug))) {
 				files, _ := os.ReadDir(filepath.Join(projects, e.Name()))
 				for _, f := range files {
 					if strings.HasSuffix(f.Name(), ".jsonl") {

@@ -68,6 +68,9 @@ make check         # the whole suite: the unit tests, the maps, go and rust buil
 make bench         # the four timed; writes article/data/languages.json
 ```
 
+On Windows, `make` is GNU make installed beside Git for Windows (Scoop, Chocolatey or MSYS2), run in Git Bash; the
+targets then build and run `go/bin/map.exe`, `rust/target/release/map.exe` and so on.
+
 ## Installing without compiling
 
 The Go and Rust programs need nothing to run; only building them needs `go` or `cargo`. Without it,
@@ -84,8 +87,10 @@ the same from one release to the next:
 | Linux, arm64 | `grepless-go-linux-arm64.tar.gz` | `grepless-rust-linux-arm64.tar.gz` (static, musl) |
 | Windows, x86_64 | `grepless-go-windows-x86_64.zip` | `grepless-rust-windows-x86_64.zip` |
 
-Each archive holds `map`, `map-guard`, `map-coach` and `map-sessions` (`.exe` on Windows). By hand, from the root
-of the repository that adopts the map:
+Each archive holds `map`, `map-guard`, `map-coach` and `map-sessions` (`.exe` on Windows). On Windows, `install.sh`
+runs in Git Bash and unpacks the `.zip` with `unzip`, or with the `tar.exe` that Windows ships when Git Bash has no
+`unzip` (its own `tar` does not read zips); `map.json` keeps the command `tools/map`, which Git Bash resolves to
+`tools/map.exe`. By hand, from the root of the repository that adopts the map:
 
 ```sh
 curl -fsSLO https://github.com/mars1571/grepless/releases/latest/download/grepless-go-linux-x86_64.tar.gz

@@ -344,7 +344,7 @@ pub fn build() -> Vec<Problem> {
     let texts = written(&comps, &untagged);
     let _ = std::fs::create_dir_all(root().join("map"));
     for (p, text) in &texts {
-        if std::fs::read_to_string(p).ok().as_deref() != Some(text.as_str()) {
+        if read_text(p).as_deref() != Some(text.as_str()) {
             let _ = std::fs::write(p, text);
         }
     }
@@ -372,8 +372,9 @@ pub fn problems() -> (Vec<Problem>, usize, usize) {
     }
     let comps = components(&blocks, &Graph::new(&blocks));
     for (p, text) in written(&comps, &untagged) {
-        if std::fs::read_to_string(&p).ok().as_deref() != Some(text.as_str()) {
+        if read_text(&p).as_deref() != Some(text.as_str()) {
             let rel = p.strip_prefix(root()).map(|r| r.to_string_lossy().to_string()).unwrap_or_else(|_| p.to_string_lossy().to_string());
+            let rel = if cfg!(windows) { rel.replace('\\', "/") } else { rel };
             found.push(Problem { path: rel, line: 0, text: format!("out of date: run {} build", cmd()) });
         }
     }

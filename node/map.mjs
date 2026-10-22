@@ -58,7 +58,8 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
 const lowerWords = text => text.toLowerCase().match(/[a-z0-9]+/g) || [];
 const splitWs = s => s.trim() === '' ? [] : s.trim().split(/\s+/);
 const suffixOf = p => { const n = p.slice(p.lastIndexOf('/') + 1); const i = n.lastIndexOf('.'); return i <= 0 ? '' : n.slice(i); };
-const read = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
+const lf = process.platform === 'win32' ? t => (t.includes('\r') ? t.replace(/\r\n?/g, '\n') : t) : t => t;   // Windows: a checkout may hold CRLF, read as LF
+const read = p => lf(fs.readFileSync(path.join(ROOT, p), 'utf8'));
 
 function findRoot(argv) {
   const i = argv.indexOf('--root');
@@ -188,7 +189,7 @@ function ignored(p) {
 }
 let _files = null;
 function gitIgnored() {
-  let lines; try { lines = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').split('\n'); } catch { return []; }
+  let lines; try { lines = lf(fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8')).split('\n'); } catch { return []; }
   return lines.map(l => l.trim()).filter(l => l && !l.startsWith('#') && !l.startsWith('!'));
 }
 function repoFiles() {
@@ -700,7 +701,7 @@ function build() {
   const comps = components(blocks, new Graph(blocks));
   const texts = written(blocks, comps, untagged);
   fs.mkdirSync(ZONES, { recursive: true });
-  for (const [p, text] of texts) if (!fs.existsSync(p) || fs.readFileSync(p, 'utf8') !== text) fs.writeFileSync(p, text);
+  for (const [p, text] of texts) if (!fs.existsSync(p) || lf(fs.readFileSync(p, 'utf8')) !== text) fs.writeFileSync(p, text);
   for (const old of fs.readdirSync(ZONES).filter(f => f.endsWith('.yaml'))) if (!texts.has(path.join(ZONES, old))) fs.unlinkSync(path.join(ZONES, old));
   saveCache();
   print(`${blocks.length} blocks in ${new Set(blocks.map(b => b.path)).size} files, ${comps.size} components, ${areasOf(comps).size} areas; ${untagged.length} files without tags; ${problems.length} problems`);
@@ -711,7 +712,7 @@ function problemsOf() {
   const found = [...found0];
   if (CFG.strict) for (const p of untagged) found.push([p, 0, 'no blocks: tag this file']);
   const comps = components(blocks, new Graph(blocks));
-  for (const [p, text] of written(blocks, comps, untagged)) if (!fs.existsSync(p) || fs.readFileSync(p, 'utf8') !== text) found.push([path.relative(ROOT, p), 0, `out of date: run ${CMD} build`]);
+  for (const [p, text] of written(blocks, comps, untagged)) if (!fs.existsSync(p) || lf(fs.readFileSync(p, 'utf8')) !== text) found.push([path.relative(ROOT, p).split(path.sep).join('/'), 0, `out of date: run ${CMD} build`]);
   if (isDir('map')) for (const old of sortedStr(fs.readdirSync(ZONES).filter(f => f.endsWith('.yaml')))) if (!areasOf(comps).has(old.slice(0, -5))) found.push([`map/${old}`, 0, `no such area: run ${CMD} build`]);
   found.push(...recipeProblems(blocks));
   saveCache();
@@ -892,8 +893,19 @@ class Repo {
     return ids.slice(0, 4).join(', ') + (ids.length > 4 ? ` (+${ids.length - 4})` : '');
   }
 }
+// A Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); null on other systems and for any other path.
+function msysPath(p) {
+  if (process.platform !== 'win32') return null;
+  const m = /^(?:\/cygdrive)?\/([A-Za-z])(\/[\s\S]*)?$/.exec(p);
+  return m ? `${m[1].toUpperCase()}:${m[2] || '/'}` : null;
+}
 function relative(q) {
-  let p = q.startsWith(ROOT + '/') ? q.slice(ROOT.length + 1) : q;
+  let r = ROOT, under;
+  if (process.platform === 'win32') {      // a path is written with `\` or `/`, the drive letter in either case, or as Git Bash's /c/…
+    r = ROOT.replace(/\\/g, '/'); q = (msysPath(q) || q).replace(/\\/g, '/');
+    under = q.length > r.length && q[r.length] === '/' && q.slice(0, r.length).toLowerCase() === r.toLowerCase();
+  } else under = q.startsWith(r + '/');
+  let p = under ? q.slice(r.length + 1) : q;
   if (p.startsWith('./')) p = p.slice(2);
   p = p.replace(/\/+$/, '') || '.';
   return exists(p) && !p.startsWith('..') ? p : null;
@@ -1300,7 +1312,7 @@ function recipeProblems(blocks) {
 }
 const SHARED = ['map/', 'map.yaml', 'CHANGELOG', 'changes/', 'docs/plans/'];
 function plan(p) {
-  const text = fs.readFileSync(p, 'utf8');
+  const text = lf(fs.readFileSync(p, 'utf8'));
   const parts = []; let current = null;
   for (const line of text.split('\n')) {
     let m = /^## Part (\d+)\b[:.\s-]*(.*)/.exec(line);

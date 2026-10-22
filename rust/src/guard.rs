@@ -49,9 +49,17 @@ fn rx(s: &'static str) -> &'static Regex {
     r
 }
 
+/// Drops the `\\?\` verbatim prefix `canonicalize` adds on Windows, so paths compare with the ones the agent writes.
+pub fn plain(p: PathBuf) -> PathBuf {
+    if !cfg!(windows) { return p; }
+    let s = p.to_string_lossy();
+    if let Some(r) = s.strip_prefix(r"\\?\UNC\") { return PathBuf::from(format!(r"\\{}", r)); }
+    match s.strip_prefix(r"\\?\") { Some(r) => PathBuf::from(r), None => p }
+}
+
 fn realpath(p: &Path) -> PathBuf {
     let full = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(p) };
-    if let Ok(r) = std::fs::canonicalize(&full) { return r; }
+    if let Ok(r) = std::fs::canonicalize(&full) { return plain(r); }
     let mut base = full.clone();
     let mut rest: Vec<std::ffi::OsString> = Vec::new();
     while std::fs::symlink_metadata(&base).is_err() {
@@ -60,10 +68,14 @@ fn realpath(p: &Path) -> PathBuf {
             _ => return full,
         }
     }
-    let mut out = std::fs::canonicalize(&base).unwrap_or(base);
+    let mut out = plain(std::fs::canonicalize(&base).unwrap_or(base));
     for r in rest { out.push(r); }
     out
 }
+
+/// The root in the form realpath gives the paths under it: canonical on Windows (the drive letter's case, no `\\?\`),
+/// and as found elsewhere, like the Python version.
+pub fn root_form(p: PathBuf) -> PathBuf { if cfg!(windows) { realpath(&p) } else { p } }
 
 fn find_root() -> PathBuf {
     if let Ok(r) = std::env::var("MAP_ROOT") { return realpath(Path::new(&r)); }
@@ -73,18 +85,31 @@ fn find_root() -> PathBuf {
         for mark in ["map.json", ".git"] {
             let mut base = start.clone();
             loop {
-                if std::fs::symlink_metadata(base.join(mark)).is_ok() { return base; }
+                if std::fs::symlink_metadata(base.join(mark)).is_ok() { return root_form(base); }
                 match base.parent() { Some(up) => base = up.to_path_buf(), None => break }
             }
         }
     }
-    cwd
+    root_form(cwd)
+}
+
+/// A Git Bash drive path (`/c/Users/x`, `/cygdrive/c/x`) as Windows names it (`C:/Users/x`); None on other systems and for any other path.
+pub fn msys_path(p: &str) -> Option<String> {
+    if !cfg!(windows) { return None; }
+    let rest = p.strip_prefix("/cygdrive").unwrap_or(p).strip_prefix('/')?;
+    let mut chars = rest.chars();
+    let drive = chars.next().filter(|c| c.is_ascii_alphabetic())?;
+    let tail = chars.as_str();
+    if !tail.is_empty() && !tail.starts_with('/') { return None; }
+    Some(format!("{}:{}", drive.to_ascii_uppercase(), if tail.is_empty() { "/" } else { tail }))
 }
 
 fn expanduser(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix('~') {
-        if let Ok(home) = std::env::var("HOME") { return PathBuf::from(home).join(rest.trim_start_matches('/')); }
+        let home = std::env::var("HOME").ok().or_else(|| if cfg!(windows) { std::env::var("USERPROFILE").ok() } else { None });
+        if let Some(home) = home { return PathBuf::from(msys_path(&home).unwrap_or(home)).join(rest.trim_start_matches('/')); }
     }
+    if let Some(drive) = msys_path(p) { return PathBuf::from(drive); }
     PathBuf::from(p)
 }
 
@@ -115,6 +140,7 @@ pub fn inside(p: &str, base: &str) -> Option<String> {
     let full = realpath(&if e.is_absolute() { e } else { Path::new(base).join(e) });
     let rel = full.strip_prefix(&g().root).ok()?;
     let s = rel.to_string_lossy().to_string();
+    let s = if cfg!(windows) { s.replace('\\', "/") } else { s };   // agents write `/` on Windows too
     Some(if s.is_empty() { ".".into() } else { s })
 }
 
@@ -211,9 +237,55 @@ pub fn mapped(rel: Option<&str>, folder_ok: bool) -> bool {
     if rel == "." { return folder_ok; }
     if rel == "map.yaml" || rel.split('/').next() == Some("map") { return false; }
     let Ok(meta) = std::fs::metadata(g().root.join(rel)) else { return false };
-    if meta.is_dir() { return folder_ok && !ignored(rel); }
+    if meta.is_dir() { return folder_ok && !ignored(rel) && holds_mapped(rel); }
     is_text(rel) && !ignored(rel)
 }
+
+// @map map.guard.scope.folder: whether a folder holds a file the map reads (one that holds none is never sent to an ask), and the entries of a folder as the walks see them
+const FOLDER_SEEN: usize = 50000;                       // files looked at in a folder; past them it is taken to hold one
+
+fn child(here: &str, n: &str) -> String { if here == "." { n.to_string() } else { format!("{}/{}", here, n) } }
+
+/// A folder (from the root) as the walks see it: its subfolders the map does not leave out, sorted, and its files. A link to a
+/// folder is not entered, as os.walk does not; None when the folder cannot be read.
+fn walk_entries(here: &str) -> Option<(Vec<String>, Vec<String>)> {
+    let entries = std::fs::read_dir(if here == "." { g().root.clone() } else { g().root.join(here) }).ok()?;
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Ok(t) = e.file_type() else { files.push(name); continue };
+        let linked = t.is_symlink();
+        if if linked { std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false) } else { t.is_dir() } {
+            if !skip_set().contains(name.as_str()) && !ignored(&child(here, &name)) && !linked { dirs.push(name); }    // a linked folder is not walked into
+        } else { files.push(name); }
+    }
+    dirs.sort();
+    Some((dirs, files))
+}
+
+/// Whether a folder holds a file the map reads, below the folders it leaves out: one that holds none is not sent to an ask, which
+/// would answer nothing. Memoized per process.
+fn holds_mapped(rel: &str) -> bool {
+    static C: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let rel = rel.split('/').filter(|s| !s.is_empty() && *s != ".").collect::<Vec<_>>().join("/");
+    let rel = if rel.is_empty() { ".".to_string() } else { rel };
+    let cache = C.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(&known) = cache.lock().unwrap().get(&rel) { return known; }
+    let (mut seen, mut todo, mut found) = (0usize, vec![rel.clone()], false);
+    'walk: while let Some(here) = todo.pop() {
+        let Some((dirs, files)) = walk_entries(&here) else { continue };
+        for n in &files {
+            seen += 1;
+            let path = child(&here, n);
+            if is_text(&path) && !ignored(&path) { found = true; break 'walk; }
+        }
+        if seen > FOLDER_SEEN { found = true; break; }
+        for d in dirs.iter().rev() { todo.push(child(&here, d)); }
+    }
+    cache.lock().unwrap().insert(rel, found);
+    found
+}
+// @end map.guard.scope.folder
 
 fn quote_word(w: &str) -> String {
     if w.is_empty() { return "''".into(); }
@@ -221,6 +293,21 @@ fn quote_word(w: &str) -> String {
     format!("'{}'", w.replace('\'', "'\"'\"'"))
 }
 pub fn quote(words: &[String]) -> String { words.iter().map(|w| quote_word(w)).collect::<Vec<_>>().join(" ") }
+
+/// The root as a word of the shell line: on Windows with `/`, which bash reads as it is (it takes a backslash for an escape).
+fn root_word() -> String {
+    let root = g().root.to_string_lossy().to_string();
+    quote_word(&if cfg!(windows) { root.replace('\\', "/") } else { root })
+}
+
+/// A path with `/` and its drive (`C:`, empty elsewhere) apart: how Windows paths are normalised like the others.
+fn drive_split(p: &str) -> (String, String) {
+    if !cfg!(windows) { return (String::new(), p.to_string()); }
+    let p = p.replace('\\', "/");
+    let b = p.as_bytes();
+    let n = if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { 2 } else { 0 };
+    (p[..n].to_string(), p[n..].to_string())
+}
 // @end map.guard.scope
 
 // @map map.guard.commands: a shell line into its commands (heredocs left out, cd followed), and each command's map question
@@ -736,7 +823,8 @@ impl Step {
 }
 
 fn normpath(p: &str) -> String {
-    let abs = p.starts_with('/');
+    let (drive, p) = drive_split(p);
+    let abs = p.starts_with('/') || !drive.is_empty();
     let mut parts: Vec<&str> = Vec::new();
     for c in p.split('/') {
         match c {
@@ -746,7 +834,7 @@ fn normpath(p: &str) -> String {
         }
     }
     let joined = parts.join("/");
-    if abs { format!("/{}", joined) } else if joined.is_empty() { ".".into() } else { joined }
+    if abs { format!("{}/{}", drive, joined) } else if joined.is_empty() { ".".into() } else { joined }
 }
 
 /// The line as a list of steps; None when the line cannot be rebuilt or a folder is unknown.
@@ -779,7 +867,7 @@ fn steps(line: &str, cwd: &str) -> Option<Vec<Step>> {
 
 /// The text run in the folder it was written for: as it is at the root, else in a (cd root && …) of its own.
 fn anchored(base: &str, text: &str) -> String {
-    if realpath(Path::new(base)) == realpath(&g().root) { text.to_string() } else { format!("(cd {} && {})", quote_word(&g().root.to_string_lossy()), text) }
+    if realpath(Path::new(base)) == realpath(&g().root) { text.to_string() } else { format!("(cd {} && {})", root_word(), text) }
 }
 
 // @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
@@ -969,7 +1057,7 @@ fn rebuild(line: &str, cwd: &str, in_place: bool) -> Option<(String, bool, bool,
 pub fn rewrite(line: &str, cwd: &str) -> Option<String> {
     let (text, replaced, ok, _) = rebuild(line, cwd, true)?;
     if !replaced || !ok { return None; }
-    Some(format!("(cd {} && {})", quote_word(&g().root.to_string_lossy()), text.trim()))
+    Some(format!("(cd {} && {})", root_word(), text.trim()))
 }
 
 /// The whole line to send again when it is refused and mixed (reads beside other steps): each read as its ask, every other step exactly as
@@ -1106,6 +1194,46 @@ fn folder_of(given: &Map<String, Value>) -> String {
     ".".into()
 }
 
+// @map map.guard.decide.glob: the ask for a Glob, only when the map holds a file the pattern names (never an ask that answers 0 files)
+const GLOB_SEEN: usize = 50000;                         // files looked at for a match; past them the call goes ahead
+
+/// The ask for a Glob, or None when it goes ahead, as a Grep, a Read or a shell line on the same place does. The pattern is split at
+/// its first wildcard segment (* ? [ {): the literal folder before it, under the tool's folder, must be a place the map reads (inside
+/// the repository, not ignored, not the map's own), and the pattern, matched as ask matches it (fnmatch on the path less its leading
+/// . and /), must name a file the map reads there. A pattern with no wildcard is that file or folder.
+fn glob_question(folder: &str, pattern: &str, cwd: &str) -> Option<String> {
+    let mut pat = expanduser(pattern).to_string_lossy().to_string();
+    if cfg!(windows) { pat = pat.replace('\\', "/"); }          // a Windows pattern may use either separator
+    let parts: Vec<&str> = pat.split('/').collect();
+    let k = parts.iter().position(|s| rx(r"[*?\[{]").is_match(s)).unwrap_or(parts.len());
+    let mut lit = parts[..k].join("/");
+    if lit.is_empty() && pat.starts_with('/') { lit = "/".into(); }
+    if rx(r"^[A-Za-z]:$").is_match(&lit) { lit.push('/'); }
+    let rel = inside(&Path::new(folder).join(&lit).to_string_lossy(), cwd)?;
+    let rest = parts[k..].join("/");
+    if rest.is_empty() {
+        return if mapped(Some(&rel), true) && rel != "." { Some(format!("{}{}", g().ask, quote(&[rel]))) } else { None };
+    }
+    let q = if rel == "." { rest } else { format!("{}/{}", rel, rest) };
+    if !mapped(Some(&rel), true) || !q.contains('/') || !rx(r"[*?]").is_match(&q) || rx(r"[\\|()+^$]").is_match(&q) {
+        return None;                                    // ignored, or a pattern that ask does not read as a glob
+    }
+    let want = q.trim_start_matches(['.', '/']);
+    let (mut seen, mut todo) = (0usize, vec![rel]);
+    while let Some(here) = todo.pop() {
+        let Some((dirs, files)) = walk_entries(&here) else { continue };
+        for n in &files {
+            seen += 1;
+            let path = child(&here, n);
+            if crate::config::fnmatch(&path, want) && mapped(Some(&path), false) { return Some(format!("{}{}", g().ask, quote(&[q]))); }
+        }
+        if seen > GLOB_SEEN { break; }
+        for d in dirs.iter().rev() { todo.push(child(&here, d)); }
+    }
+    None
+}
+// @end map.guard.decide.glob
+
 /// The map's question for this call, or None when the call may go ahead.
 pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
     let (kind, given, cwd) = normalise(agent, data);
@@ -1129,13 +1257,7 @@ pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
             for k in ["glob", "include"] { let v = s(&given, k); if !v.is_empty() { words.push("--glob".into()); words.push(v); } }
             grep_question(&words, &cwd).map(|q| format!("{}{}", g().ask, quote(&q)))
         }
-        "glob" => {
-            let rel = inside(&folder_of(&given), &cwd);
-            if !mapped(rel.as_deref(), true) { return None; }
-            let dir = rel.filter(|r| r != ".").unwrap_or_default();
-            let pat = s(&given, "pattern");
-            Some(format!("{}{}", g().ask, quote(&[if dir.is_empty() { pat } else { format!("{}/{}", dir, pat) }])))
-        }
+        "glob" => glob_question(&folder_of(&given), &s(&given, "pattern"), &cwd),
         "list" => {
             let rel = inside(&folder_of(&given), &cwd);
             if mapped(rel.as_deref(), true) && rel.as_deref() != Some(".") { Some(format!("{}{}", g().ask, quote(&[rel.unwrap()]))) } else { None }
@@ -1201,15 +1323,27 @@ fn merge(old: &Value, new: &Value) -> Value {
 }
 
 pub fn install(agent: &str) {
-    let exe = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()).unwrap_or_default();
-    let root = std::fs::canonicalize(&g().root).unwrap_or_else(|_| g().root.clone());   // links resolved on both sides
+    let exe = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()).map(plain).unwrap_or_default();
+    let root = std::fs::canonicalize(&g().root).map(plain).unwrap_or_else(|_| g().root.clone());   // links resolved on both sides
     let me = exe.strip_prefix(&root).map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| exe.to_string_lossy().to_string());
+    let me = if cfg!(windows) { me.replace('\\', "/") } else { me };   // the hook command runs in bash
+    // On Windows the commands name the guard without ".exe": Git Bash resolves it, and the same settings work when the repository opens on macOS.
+    let cmd = if cfg!(windows) && me.to_ascii_lowercase().ends_with(".exe") { me[..me.len() - 4].to_string() } else { me.clone() };
     let (path, new) = match agent {
-        "claude" => (".claude/settings.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Grep|Glob", "hooks": [{"type": "command", "command": format!("\"$CLAUDE_PROJECT_DIR/{}\"", me)}]}]}})),
-        "codex" => (".codex/hooks.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("\"$(git rev-parse --show-toplevel)/{}\" --agent codex", me), "statusMessage": "map-guard"}]}]}})),
-        "cursor" => (".cursor/hooks.json", json!({"version": 1, "hooks": {"beforeShellExecution": [{"command": format!("{} --agent cursor", me)}], "beforeReadFile": [{"command": format!("{} --agent cursor", me)}]}})),
-        "copilot" => (".github/hooks/map-guard.json", json!({"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": format!("{} --agent copilot", me), "cwd": ".", "timeoutSec": 10}]}})),
-        "gemini" => (".gemini/settings.json", json!({"hooks": {"BeforeTool": [{"matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory", "hooks": [{"name": "map-guard", "type": "command", "command": format!("\"$GEMINI_PROJECT_DIR/{}\" --agent gemini", me), "timeout": 5000}]}]}})),
+        "claude" => (".claude/settings.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Grep|Glob", "hooks": [{"type": "command", "command": format!("\"$CLAUDE_PROJECT_DIR/{}\"", cmd)}]}]}})),
+        "codex" => (".codex/hooks.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("\"$(git rev-parse --show-toplevel)/{}\" --agent codex", cmd), "statusMessage": "map-guard"}]}]}})),
+        "cursor" => (".cursor/hooks.json", json!({"version": 1, "hooks": {"beforeShellExecution": [{"command": format!("{} --agent cursor", cmd)}], "beforeReadFile": [{"command": format!("{} --agent cursor", cmd)}]}})),
+        "copilot" => {
+            let mut entry = json!({"type": "command", "bash": format!("{} --agent copilot", cmd)});
+            if cfg!(windows) {   // PowerShell runs the .exe, from the root (a path on another drive is already complete)
+                let rooted = me.starts_with('/') || me.as_bytes().get(1) == Some(&b':');
+                entry["powershell"] = json!(format!("{}{} --agent copilot", if rooted { "" } else { "./" }, me));
+            }
+            entry["cwd"] = json!(".");
+            entry["timeoutSec"] = json!(10);
+            (".github/hooks/map-guard.json", json!({"version": 1, "hooks": {"preToolUse": [entry]}}))
+        }
+        "gemini" => (".gemini/settings.json", json!({"hooks": {"BeforeTool": [{"matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory", "hooks": [{"name": "map-guard", "type": "command", "command": format!("\"$GEMINI_PROJECT_DIR/{}\" --agent gemini", cmd), "timeout": 5000}]}]}})),
         _ => { eprintln!("install <agent>: one of claude, codex, cursor, copilot, gemini"); std::process::exit(1); }
     };
     let full = g().root.join(path);

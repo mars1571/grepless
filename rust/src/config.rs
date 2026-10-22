@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::guard::{plain, root_form};
+
 pub const VERSION: &str = "1.0.0";
 pub const ID: &str = r"[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+";
 pub const LARGE: u64 = 1_000_000;
@@ -393,10 +395,18 @@ pub fn suffix(p: &str) -> String {
 
 pub fn read_file(p: &str) -> String {
     match std::fs::read(root().join(p)) {
-        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Ok(b) => newlines(String::from_utf8_lossy(&b).into_owned()),
         Err(_) => String::new(),
     }
 }
+
+/// Text with every line ending in `\n`, as Python reads a file in text mode: on Windows a file may be checked out with CRLF.
+pub fn newlines(text: String) -> String {
+    if cfg!(windows) && text.contains('\r') { text.replace("\r\n", "\n").replace('\r', "\n") } else { text }
+}
+
+/// A file's text through `newlines`; None when it cannot be read.
+pub fn read_text(p: &Path) -> Option<String> { std::fs::read_to_string(p).ok().map(newlines) }
 pub fn is_file(p: &str) -> bool { std::fs::metadata(root().join(p)).map(|m| m.is_file()).unwrap_or(false) }
 pub fn is_dir(p: &str) -> bool { std::fs::metadata(root().join(p)).map(|m| m.is_dir()).unwrap_or(false) }
 pub fn exists(p: &str) -> bool { std::fs::symlink_metadata(root().join(p)).is_ok() }
@@ -409,17 +419,17 @@ fn strs(v: Option<&Value>) -> Vec<String> {
 
 fn find_root() -> PathBuf {
     if let Ok(r) = std::env::var("MAP_ROOT") {
-        return std::fs::canonicalize(&r).unwrap_or(PathBuf::from(r));
+        return std::fs::canonicalize(&r).map(plain).unwrap_or(PathBuf::from(r));
     }
     let cwd = std::env::current_dir().unwrap_or(PathBuf::from("."));
-    let exe = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok());
+    let exe = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()).map(plain);
     let here = exe.and_then(|e| e.parent().map(|p| p.to_path_buf())).unwrap_or(cwd.clone());
     for mark in ["map.json", ".git"] {
         for start in [&cwd, &here] {
             let mut base = start.clone();
             loop {
                 if base.join(mark).exists() {
-                    return base;
+                    return root_form(base);
                 }
                 match base.parent() {
                     Some(up) => base = up.to_path_buf(),
@@ -428,7 +438,7 @@ fn find_root() -> PathBuf {
             }
         }
     }
-    cwd
+    root_form(cwd)
 }
 
 /// Resolves the root and reads map.json; takes --root out of the arguments.
@@ -436,7 +446,7 @@ pub fn setup(mut argv: Vec<String>) -> Vec<String> {
     let mut root = None;
     if let Some(i) = argv.iter().position(|a| a == "--root") {
         if i + 1 < argv.len() {
-            root = Some(std::fs::canonicalize(&argv[i + 1]).unwrap_or(PathBuf::from(&argv[i + 1])));
+            root = Some(std::fs::canonicalize(&argv[i + 1]).map(plain).unwrap_or(PathBuf::from(&argv[i + 1])));
             argv.drain(i..i + 2);
         }
     }

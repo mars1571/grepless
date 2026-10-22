@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -27,8 +28,15 @@ var shell = map[string]bool{"Bash": true, "bash": true, "powershell": true, "She
 var heredocTag = regexp.MustCompile(`<<-?\s*'?(\w+)'?`)
 var stepSplit = regexp.MustCompile(`&&|\|\||[;\n|]`)
 var assigns = regexp.MustCompile(`^(\w+=\S+\s+)+`)
-var mapScript = regexp.MustCompile(`map(?:\.py|\.mjs)$|(?:^|/)map$`)
+var mapScript = regexp.MustCompile(mapScriptRx()) // tools/map.py, tools/map.mjs, tools/map (Windows: tools/map.exe)
 var nonWord = regexp.MustCompile(`[^A-Za-z0-9_]`)
+
+func mapScriptRx() string {
+	if runtime.GOOS == "windows" {
+		return `map(?:\.py|\.mjs|\.exe)$|(?:^|/)map$`
+	}
+	return `map(?:\.py|\.mjs)$|(?:^|/)map$`
+}
 
 func str(v any) string {
 	s, _ := v.(string)

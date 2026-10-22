@@ -23,8 +23,14 @@ import re
 import sys
 from datetime import datetime
 
+if os.name == 'nt':     # Windows: UTF-8 and LF on the standard streams, as elsewhere (the default is the ANSI code page and CRLF)
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, 'reconfigure'):
+            _s.reconfigure(encoding='utf-8', newline='\n')
+
 ROOT = pathlib.Path(os.environ.get('MAP_ROOT') or pathlib.Path(__file__).resolve().parent.parent)
 PROJECTS = pathlib.Path.home() / '.claude' / 'projects'
+MAPX = r'map(?:\.py|\.mjs|\.exe)?' if os.name == 'nt' else r'map(?:\.py|\.mjs)?'        # how a line names the map; Windows: tools/map.exe too
 LOOK = {'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'cat', 'sed', 'head', 'tail', 'awk', 'nl', 'less', 'more',
         'ls', 'find', 'tree', 'wc', 'cut', 'sort', 'uniq', 'tr', 'xargs', 'column', 'echo', 'printf'}
 
@@ -36,7 +42,7 @@ def looks(tool, given):
     if tool != 'Bash':
         return None
     line = given.get('command', '')
-    if re.search(r'map(?:\.py|\.mjs)?\s+(ask|brief|find|history|deps|impact|recipe|where)\b', line):
+    if re.search(MAPX + r'\s+(ask|brief|find|history|deps|impact|recipe|where)\b', line):
         return 'map'
     line = re.sub(r'\d?>&\d|\d?>\s*/dev/null', ' ', line)
     if re.search(r'\bsed\s+-i|>\s*\S|\bnode\b|\bmake\b|\bnpx\b', line):
@@ -63,7 +69,7 @@ def guard():
 def questions(line):
     """The questions of each ask in a shell line: [n, …]."""
     out = []
-    for m in re.finditer(r'map(?:\.py|\.mjs)?\s+ask\s+', line):
+    for m in re.finditer(MAPX + r'\s+ask\s+', line):
         rest = line[m.end():]
         end = len(rest)
         for stop in re.finditer(r'\d?>|\||;|&&|\n', rest):         # a redirection, a pipe or the next step
@@ -206,7 +212,7 @@ def report(paths):
 def main(args):
     since = args[args.index('--since') + 1] if '--since' in args else ''
     named = [a for k, a in enumerate(args) if a != '--since' and (k == 0 or args[k - 1] != '--since')]
-    slug = str(ROOT).replace('/', '-').replace('.', '-')
+    slug = re.sub(r'[^A-Za-z0-9]', '-', str(ROOT)) if os.name == 'nt' else str(ROOT).replace('/', '-').replace('.', '-')   # C:\Github\x → C--Github-x
     folders = [f for f in PROJECTS.glob(slug + '*') if f.is_dir()]
     found = sorted((p for f in folders for p in f.glob('*.jsonl')), key=lambda p: p.stat().st_mtime)
     if named:                                                    # a transcript named by its path is read wherever it is

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode"
@@ -111,13 +113,58 @@ func findRoot() string {
 			}
 		}
 	}
-	return cwd
+	return rootForm(cwd)
 }
 
+// rootForm: the root in the form realpath gives the paths under it. On Windows that is the canonical one (the drive
+// letter's case, long names), so Rel finds the paths inside it; elsewhere the root stays as found, like Python's.
+func rootForm(p string) string {
+	if runtime.GOOS == "windows" {
+		return realpath(p)
+	}
+	return p
+}
+
+var msysRx = regexp.MustCompile(`(?s)^(?:/cygdrive)?/([A-Za-z])(/.*)?$`)
+
+// msysPath: a Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); false on other
+// systems and for any other path.
+func msysPath(p string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	m := msysRx.FindStringSubmatch(p)
+	if m == nil {
+		return "", false
+	}
+	tail := m[2]
+	if tail == "" {
+		tail = "/"
+	}
+	return strings.ToUpper(m[1]) + ":" + tail, true
+}
+
+// expanduser: os.path.expanduser; on Windows $HOME (else the profile) for a leading ~, and Git Bash's drive paths as
+// Windows names them.
 func expanduser(p string) string {
+	if runtime.GOOS != "windows" {
+		if strings.HasPrefix(p, "~") {
+			home, _ := os.UserHomeDir()
+			return filepath.Join(home, p[1:])
+		}
+		return p
+	}
 	if strings.HasPrefix(p, "~") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, p[1:])
+		home := os.Getenv("HOME")
+		if home == "" {
+			home = os.Getenv("USERPROFILE")
+		}
+		if home != "" {
+			return filepath.Join(home, strings.TrimLeft(p[1:], "/"))
+		}
+	}
+	if m, ok := msysPath(p); ok {
+		return m
 	}
 	return p
 }
@@ -149,15 +196,13 @@ func realpath(p string) string {
 
 // Inside: the path relative to the repository, or "" (and false) when it is outside it.
 func Inside(p, base string) (string, bool) {
-	var full string
-	if filepath.IsAbs(expanduser(p)) {
-		full = realpath(expanduser(p))
-	} else {
-		full = realpath(filepath.Join(base, expanduser(p)))
-	}
+	full := realpath(joinPath(base, p))
 	rel, err := filepath.Rel(ROOT, full)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", false
+	}
+	if runtime.GOOS == "windows" {
+		rel = filepath.ToSlash(rel) // agents write `/` on Windows too
 	}
 	return rel, true
 }
@@ -227,7 +272,7 @@ func ignored(rel string) bool {
 		ignoredPats = append(ignoredPats, skipped...)
 		ignoredRead = true
 	}
-	parts := strings.Split(rel, string(os.PathSeparator))
+	parts := strings.Split(rel, "/")
 	for _, x := range parts[:len(parts)-1] {
 		if SKIP[x] {
 			return true
@@ -239,7 +284,7 @@ func ignored(rel string) bool {
 	for _, p := range ignoredPats {
 		folder, q := strings.HasSuffix(p, "/"), strings.Trim(p, "/")
 		if strings.Contains(q, "/") {
-			if rel == q || strings.HasPrefix(rel, q+string(os.PathSeparator)) || Fnmatch(rel, q) {
+			if rel == q || strings.HasPrefix(rel, q+"/") || Fnmatch(rel, q) {
 				return true
 			}
 		} else {
@@ -332,7 +377,7 @@ func Mapped(rel string, ok bool, folderOk bool) bool {
 	if rel == "." {
 		return folderOk
 	}
-	if rel == "map.yaml" || strings.Split(rel, string(os.PathSeparator))[0] == "map" {
+	if rel == "map.yaml" || strings.Split(rel, "/")[0] == "map" {
 		return false
 	}
 	st, err := os.Stat(filepath.Join(ROOT, rel))
@@ -340,12 +385,99 @@ func Mapped(rel string, ok bool, folderOk bool) bool {
 		return false
 	}
 	if st.IsDir() {
-		return folderOk && !ignored(rel)
+		return folderOk && !ignored(rel) && holdsMapped(rel)
 	}
 	return isText(rel) && !ignored(rel)
 }
 
+// @map map.guard.scope.folder: whether a folder holds a file the map reads (one that holds none is never sent to an ask), and the walk of a folder's files a Glob shares
+const folderSeen = 50000 // files looked at in a folder; past them it is taken to hold one
+
+var holdsCache = map[string]bool{}
+
+// holdsMapped: whether a folder holds a file the map reads, below the folders it leaves out; one that holds none is not
+// sent to an ask, which would answer nothing. Memoized per process.
+func holdsMapped(rel string) bool {
+	if v, ok := holdsCache[rel]; ok {
+		return v
+	}
+	found, capped := walkFiles(rel, folderSeen, func(sub string) bool { return isText(sub) && !ignored(sub) })
+	holdsCache[rel] = found || capped
+	return found || capped
+}
+
+// walkFiles: the files under a folder of the repository (rel, from the root), depth first, the folders in order, those
+// the map leaves out (SKIP, ignored) and the links to folders not entered. visit gets each file's path and stops the walk
+// by returning true; the walk also stops once a folder's files bring the count past limit. It reports which of the two.
+func walkFiles(rel string, limit int, visit func(sub string) bool) (found, capped bool) {
+	seen := 0
+	var walk func(here string) bool
+	walk = func(here string) bool {
+		dir := ROOT
+		if here != "." {
+			dir = filepath.Join(ROOT, filepath.FromSlash(here))
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return false
+		}
+		var dirs []string
+		for _, e := range entries {
+			n := e.Name()
+			if e.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+				if st, err := os.Stat(filepath.Join(dir, n)); err == nil && st.IsDir() {
+					continue // a link to a folder: listed among the folders, not entered
+				}
+			}
+			sub := n
+			if here != "." {
+				sub = here + "/" + n
+			}
+			if e.IsDir() {
+				if !SKIP[n] && !ignored(sub) {
+					dirs = append(dirs, n)
+				}
+				continue
+			}
+			seen++
+			if visit(sub) {
+				return true
+			}
+		}
+		if seen > limit {
+			capped = true
+			return false
+		}
+		sort.Strings(dirs)
+		for _, d := range dirs {
+			sub := d
+			if here != "." {
+				sub = here + "/" + d
+			}
+			if walk(sub) {
+				return true
+			}
+			if capped {
+				break
+			}
+		}
+		return false
+	}
+	found = walk(path.Clean(rel))
+	return found, capped
+}
+
+// @end map.guard.scope.folder
+
 var safeRx = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
+
+// rootWord: the root as a word of the shell line: on Windows with `/`, which bash reads as it is.
+func rootWord() string {
+	if runtime.GOOS == "windows" {
+		return quoteWord(strings.ReplaceAll(ROOT, `\`, "/"))
+	}
+	return quoteWord(ROOT)
+}
 
 func quoteWord(w string) string {
 	if w == "" {
@@ -551,11 +683,7 @@ func Commands(line, cwd string) []command {
 		case "|", "||", "&&", ";", "&", "(", ")", "|&", ";;", "\n":
 			if len(words) > 0 {
 				if words[0] == "cd" && len(words) > 1 {
-					if filepath.IsAbs(expanduser(words[1])) {
-						base = expanduser(words[1])
-					} else {
-						base = filepath.Join(base, expanduser(words[1]))
-					}
+					base = joinPath(base, words[1])
 				} else {
 					out = append(out, command{words, piped, base})
 				}
@@ -670,7 +798,7 @@ func GrepQuestion(words []string, base string) []string {
 		var np []string
 		for _, p := range bases {
 			for _, g := range includes {
-				np = append(np, strings.TrimLeft(filepath.Join(p, "*"+strings.TrimLeft(g, "*")), "/"))
+				np = append(np, strings.TrimLeft(path.Join(p, "*"+strings.TrimLeft(g, "*")), "/"))
 			}
 		}
 		places = np
@@ -995,7 +1123,7 @@ func ListQuestion(words []string, base string) []string {
 			if rel == "." {
 				dir = ""
 			}
-			return []string{filepath.Join(dir, "*"+strings.TrimLeft(pattern, "*"))}
+			return []string{path.Join(dir, "*"+strings.TrimLeft(pattern, "*"))}
 		}
 		return []string{rel}
 	}
@@ -1098,10 +1226,7 @@ func scripts(line, cwd string) []string {
 		b := filepath.Base(c.words[0])
 		if (b == "node" || b == "python" || b == "python3") && len(c.words) > 1 && !strings.HasPrefix(c.words[1], "-") {
 			name := expand_(c.words[1])
-			f := expanduser(name)
-			if !filepath.IsAbs(f) {
-				f = filepath.Join(c.base, f)
-			}
+			f := joinPath(c.base, name)
 			if _, ok := Inside(name, c.base); !ok {
 				if st, err := os.Stat(f); err == nil && st.Mode().IsRegular() && st.Size() < 300000 {
 					if b, err := os.ReadFile(f); err == nil {
@@ -1390,11 +1515,15 @@ func (s step) written() string {
 	return s.lead + s.prefix + s.core + s.trail
 }
 
-// joinPath: os.path.join(base, expanduser(p)): an absolute p replaces base.
+// joinPath: os.path.join(base, expanduser(p)): an absolute p replaces base. On Windows a path rooted without a drive
+// (`/tmp/x`) stays on the drive of base, as in Python and Rust, and does not land under base.
 func joinPath(base, p string) string {
 	p = expanduser(p)
 	if filepath.IsAbs(p) {
 		return p
+	}
+	if runtime.GOOS == "windows" && p != "" && os.IsPathSeparator(p[0]) {
+		return filepath.Clean(filepath.VolumeName(base) + p)
 	}
 	return filepath.Join(base, p)
 }
@@ -1458,7 +1587,7 @@ func anchored(base, text string) string {
 	if realpath(base) == realpath(ROOT) {
 		return text
 	}
-	return "(cd " + quoteWord(ROOT) + " && " + text + ")"
+	return "(cd " + rootWord() + " && " + text + ")"
 }
 
 // @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
@@ -1792,7 +1921,7 @@ func rewrite(line, cwd string) string {
 	if b == nil || !b.replaced || !b.ok {
 		return ""
 	}
-	return "(cd " + quoteWord(ROOT) + " && " + strings.TrimSpace(b.text) + ")"
+	return "(cd " + rootWord() + " && " + strings.TrimSpace(b.text) + ")"
 }
 
 // resend: the whole line to send again when it is refused and mixed (reads beside other steps): each read as its ask, every
@@ -1808,6 +1937,7 @@ func resend(line, cwd string) string {
 // @end map.guard.commands.rewrite
 
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
+// @map map.guard.decide.question: the map question of a command and of a whole shell line, with the filters and counts that go with it
 func question(words []string, base string) []string {
 	tool := filepath.Base(words[0])
 	switch {
@@ -1928,6 +2058,8 @@ func ShellQuestion(line, cwd string) string {
 	all = append(all, filtered...)
 	return strings.Join(all, "; ")
 }
+
+// @end map.guard.decide.question
 
 func readQuestionTool(filePath, cwd string, offset, limit any) string {
 	rel, ok := Inside(filePath, cwd)
@@ -2064,6 +2196,66 @@ func folderOf(given map[string]any) string {
 	return "."
 }
 
+// @map map.guard.decide.glob: the ask for a Glob, only when the map holds a file the pattern names (never an ask that answers 0 files)
+var globWild = regexp.MustCompile(`[*?[{]`)
+var globStar = regexp.MustCompile(`[*?]`)
+var globRegex = regexp.MustCompile(`[\\|()+^$]`)
+var driveRx = regexp.MustCompile(`^[A-Za-z]:$`)
+
+const globSeen = 50000 // files looked at for a match; past them the call goes ahead
+
+// globQuestion: the ask for a Glob, or "" when it goes ahead, as a Grep, a Read or a shell line on the same place does.
+// The pattern is split at its first wildcard segment (* ? [ {): the literal folder before it, under the tool's folder,
+// must be a place the map reads (inside the repository, not ignored, not the map's own), and the pattern, matched as
+// ask matches it (Fnmatch on the path less its leading . and /), must name a file the map reads there. A pattern with
+// no wildcard is that file or folder.
+func globQuestion(folder, pattern, cwd string) string {
+	pat := expanduser(pattern)
+	if runtime.GOOS == "windows" {
+		pat = strings.ReplaceAll(pat, `\`, "/") // a Windows pattern may use either separator
+	}
+	parts := strings.Split(pat, "/")
+	k := len(parts)
+	for i, s := range parts {
+		if globWild.MatchString(s) {
+			k = i
+			break
+		}
+	}
+	lit := strings.Join(parts[:k], "/")
+	if lit == "" && strings.HasPrefix(pat, "/") {
+		lit = "/"
+	}
+	if driveRx.MatchString(lit) {
+		lit += "/"
+	}
+	rel, ok := Inside(joinPath(folder, lit), cwd)
+	if !ok {
+		return ""
+	}
+	rest := strings.Join(parts[k:], "/")
+	if rest == "" {
+		if Mapped(rel, true, true) && rel != "." {
+			return ASK + Quote([]string{rel})
+		}
+		return ""
+	}
+	q := rel + "/" + rest
+	if rel == "." {
+		q = rest
+	}
+	if !Mapped(rel, true, true) || !strings.Contains(q, "/") || !globStar.MatchString(q) || globRegex.MatchString(q) {
+		return "" // ignored, or a pattern that ask does not read as a glob
+	}
+	want := strings.TrimLeft(q, "./")
+	if found, _ := walkFiles(rel, globSeen, func(sub string) bool { return Fnmatch(sub, want) && Mapped(sub, true, false) }); found {
+		return ASK + Quote([]string{q})
+	}
+	return ""
+}
+
+// @end map.guard.decide.glob
+
 // Replacement: the map's question for this call, or "" when the call may go ahead.
 func Replacement(agent string, data map[string]any) string {
 	kind, given, cwd := normalise(agent, data)
@@ -2111,15 +2303,7 @@ func Replacement(agent string, data map[string]any) string {
 		}
 		return ASK + Quote(q)
 	case "glob":
-		rel, ok := Inside(folderOf(given), cwd)
-		if !Mapped(rel, ok, true) {
-			return ""
-		}
-		dir := rel
-		if !ok || rel == "." {
-			dir = ""
-		}
-		return ASK + Quote([]string{filepath.Join(dir, str(given["pattern"]))})
+		return globQuestion(folderOf(given), str(given["pattern"]), cwd)
 	case "list":
 		rel, ok := Inside(folderOf(given), cwd)
 		if Mapped(rel, ok, true) && rel != "." {
@@ -2206,6 +2390,15 @@ func JSON(v any, indent string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// winExe: the guard's path with the `.exe` Windows gives the file back, for PowerShell, which needs the extension;
+// the other hooks name it without it (Git Bash finds the .exe, and the same settings run on macOS and Linux).
+func winExe(me string) string {
+	if strings.HasSuffix(strings.ToLower(me), ".exe") {
+		return me
+	}
+	return me + ".exe"
+}
+
 type setting struct {
 	path string
 	make func(me string) map[string]any
@@ -2222,7 +2415,15 @@ var settings = map[string]setting{
 		return map[string]any{"version": 1, "hooks": map[string]any{"beforeShellExecution": []any{map[string]any{"command": me + " --agent cursor"}}, "beforeReadFile": []any{map[string]any{"command": me + " --agent cursor"}}}}
 	}},
 	"copilot": {".github/hooks/map-guard.json", func(me string) map[string]any {
-		return map[string]any{"version": 1, "hooks": map[string]any{"preToolUse": []any{map[string]any{"type": "command", "bash": me + " --agent copilot", "cwd": ".", "timeoutSec": 10}}}}
+		hook := map[string]any{"type": "command", "bash": me + " --agent copilot", "cwd": ".", "timeoutSec": 10}
+		if runtime.GOOS == "windows" { // PowerShell runs the .exe itself, from the root (`./` unless the path is a full one)
+			ps := winExe(me)
+			if !filepath.IsAbs(ps) {
+				ps = "./" + ps
+			}
+			hook["powershell"] = ps + " --agent copilot"
+		}
+		return map[string]any{"version": 1, "hooks": map[string]any{"preToolUse": []any{hook}}}
 	}},
 	"gemini": {".gemini/settings.json", func(me string) map[string]any {
 		return map[string]any{"hooks": map[string]any{"BeforeTool": []any{map[string]any{"matcher": "run_shell_command|read_file|read_many_files|grep_search|glob|list_directory", "hooks": []any{map[string]any{"name": "map-guard", "type": "command", "command": `"$GEMINI_PROJECT_DIR/` + me + `" --agent gemini`, "timeout": 5000}}}}}}
@@ -2283,6 +2484,9 @@ func Install(agent string) {
 		me = exe
 	}
 	me = filepath.ToSlash(me)
+	if runtime.GOOS == "windows" && strings.HasSuffix(strings.ToLower(me), ".exe") {
+		me = me[:len(me)-len(".exe")] // the hook command runs in bash, which finds map-guard.exe by this name
+	}
 	full := filepath.Join(ROOT, s.path)
 	var old any = map[string]any{}
 	if b, err := os.ReadFile(full); err == nil {

@@ -51,6 +51,11 @@ import subprocess
 import sys
 import tempfile
 
+if os.name == 'nt':     # Windows: UTF-8 and LF on the standard streams, as elsewhere (the default is the ANSI code page and CRLF)
+    for _s in (sys.stdout, sys.stderr):
+        if hasattr(_s, 'reconfigure'):
+            _s.reconfigure(encoding='utf-8', newline='\n')
+
 VERSION = '1.0.0'
 CONFIG = {
     'command': 'python3 tools/map.py',   # how agents run this file, as the map's answers and AGENTS.md say it
@@ -92,6 +97,20 @@ SKIP = {'node_modules', 'dist', 'build', 'out', 'target', 'vendor', 'venv', '.ve
 BINARY = re.compile(r'\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|otf|mp4|mp3|bin|exe|dylib|so)$', re.I)
 ID = r'[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+'
 LARGE = 1_000_000          # bytes: a text file past this is data (a lock, a bundle), listed and never searched or printed
+
+
+def write_lf(path, text):
+    """The text to a file as UTF-8 with LF line ends on every system (write_text would write CRLF on Windows)."""
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(text)
+
+
+def msys_path(p):
+    """A Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); None on other systems and for any other path."""
+    if os.name != 'nt':
+        return None
+    m = re.fullmatch(r'(?:/cygdrive)?/([A-Za-z])(/.*)?', p, re.S)
+    return m and f'{m.group(1).upper()}:{m.group(2) or "/"}'
 
 
 def find_root(argv):
@@ -279,12 +298,12 @@ def repo_files():
     if _files is None:
         found, top = [], ''
         try:
-            top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+            top = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=ROOT, capture_output=True, text=True, encoding='utf-8').stdout.strip()
         except OSError:
             top = ''
         if top and pathlib.Path(top).resolve() == ROOT.resolve():
             out = subprocess.run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=ROOT,
-                                 capture_output=True, text=True).stdout.split('\0')
+                                 capture_output=True, text=True, encoding='utf-8').stdout.split('\0')
             found = [p for p in out if p and ((ROOT / p).is_file() and not (ROOT / p).is_symlink())]
         else:
             skip = git_ignored()
@@ -487,8 +506,8 @@ def save_cache():
         try:
             CACHE.parent.mkdir(parents=True, exist_ok=True)
             tmp = CACHE.with_suffix(f'.{os.getpid()}.tmp')
-            tmp.write_text(json.dumps({'version': VERSION, 'files': {p: f for p, f in _cache['files'].items()
-                                                                     if p in set(repo_files())}}), encoding='utf-8')
+            write_lf(tmp, json.dumps({'version': VERSION, 'files': {p: f for p, f in _cache['files'].items()
+                                                                    if p in set(repo_files())}}))
             os.replace(tmp, CACHE)
         except OSError:
             pass
@@ -1040,7 +1059,7 @@ def build():
     ZONES.mkdir(exist_ok=True)
     for path, text in texts.items():
         if not path.exists() or path.read_text(encoding='utf-8') != text:
-            path.write_text(text, encoding='utf-8')
+            write_lf(path, text)
     for old in ZONES.glob('*.yaml'):
         if old not in texts:
             old.unlink()
@@ -1058,11 +1077,11 @@ def problems():
     comps = components(blocks, Graph(blocks))
     for path, text in written(blocks, comps, untagged).items():
         if not path.exists() or path.read_text(encoding='utf-8') != text:
-            found.append((str(path.relative_to(ROOT)), 0, f'out of date: run {CMD} build'))
+            found.append((path.relative_to(ROOT).as_posix(), 0, f'out of date: run {CMD} build'))
     if ZONES.is_dir():
         for old in sorted(ZONES.glob('*.yaml')):
             if old.stem not in areas_of(comps):
-                found.append((str(old.relative_to(ROOT)), 0, f'no such area: run {CMD} build'))
+                found.append((old.relative_to(ROOT).as_posix(), 0, f'no such area: run {CMD} build'))
     found += recipe_problems(blocks)
     save_cache()
     return found, len(blocks), len(untagged)
@@ -1157,7 +1176,7 @@ def gaps(paths):
 
 def git(*args):
     try:
-        return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True).stdout
+        return subprocess.run(['git', *args], cwd=ROOT, capture_output=True, text=True, encoding='utf-8').stdout
     except OSError:
         return ''
 
@@ -1340,7 +1359,13 @@ class Repo:
 
 
 def relative(q):
-    p = q[len(str(ROOT)) + 1:] if q.startswith(str(ROOT) + '/') else q
+    r = str(ROOT)
+    if os.name == 'nt':     # a path is written with `\` or `/`, the drive letter in either case, or as Git Bash's /c/…
+        r, q = r.replace('\\', '/'), (msys_path(q) or q).replace('\\', '/')
+        under = len(q) > len(r) and q[len(r)] == '/' and q[:len(r)].lower() == r.lower()
+    else:
+        under = q.startswith(r + '/')
+    p = q[len(r) + 1:] if under else q
     p = p[2:] if p.startswith('./') else p
     p = p.rstrip('/') or '.'
     return p if (ROOT / p).exists() and not p.startswith('..') else None
@@ -2066,7 +2091,7 @@ def init(args):
         cfg = {'command': CMD, 'holds': {a: '' for a, _ in counts.most_common()}}
         if any(area_of(p) == 'root' for p in files()):
             cfg['areas'] = {'.': 'root'}
-        (ROOT / 'map.json').write_text(jdump(cfg, 2) + '\n', encoding='utf-8')
+        write_lf(ROOT / 'map.json', jdump(cfg, 2) + '\n')
         print(f'map.json written: {len(counts)} areas detected, each with an empty "holds" to fill in (one line: what the area holds).')
     else:
         print('map.json is there already (--force writes it again).')

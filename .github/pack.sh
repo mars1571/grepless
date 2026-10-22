@@ -12,8 +12,12 @@ if [ "$os" != windows ]; then
   tar -czf "$dist/$name.tar.gz" -C "$dist/$name" map map-guard map-coach map-sessions
 elif command -v 7z > /dev/null; then
   (cd "$dist/$name" && 7z a -tzip -bd "../$name.zip" ./*.exe > /dev/null)
-else
+elif command -v zip > /dev/null; then
   (cd "$dist/$name" && zip -q "../$name.zip" ./*.exe)
+else    # Git Bash has neither 7z nor zip when 7-Zip is not installed: Python writes the zip
+  py=python3
+  command -v python3 > /dev/null || py=python
+  (cd "$dist/$name" && $py -m zipfile -c "../$name.zip" map.exe map-guard.exe map-coach.exe map-sessions.exe)
 fi
 rm -rf "${dist:?}/$name"
 echo "$dist/$name: packed"

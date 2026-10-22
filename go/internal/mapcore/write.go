@@ -537,7 +537,7 @@ func Build() []Problem {
 	os.MkdirAll(ZONES, 0o755)
 	for _, p := range w.paths {
 		old, err := os.ReadFile(p)
-		if err != nil || string(old) != w.texts[p] {
+		if err != nil || lf(string(old)) != w.texts[p] {
 			os.WriteFile(p, []byte(w.texts[p]), 0o644)
 		}
 	}
@@ -570,9 +570,9 @@ func Problems() ([]Problem, int, int) {
 	w := Written(comps, untagged)
 	for _, p := range w.paths {
 		old, err := os.ReadFile(p)
-		if err != nil || string(old) != w.texts[p] {
+		if err != nil || lf(string(old)) != w.texts[p] {
 			rel, _ := filepath.Rel(ROOT, p)
-			found = append(found, Problem{rel, 0, "out of date: run " + CMD + " build"})
+			found = append(found, Problem{filepath.ToSlash(rel), 0, "out of date: run " + CMD + " build"})
 		}
 	}
 	if IsDir("map") {

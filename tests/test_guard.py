@@ -4,26 +4,63 @@ not reading the code or the docs goes ahead; each agent's format is read and ans
 import json
 import os
 import pathlib
+import re
+import shlex
+import shutil
 import subprocess
+import tempfile
 import unittest
 
-HERE = pathlib.Path(__file__).resolve().parent
+HERE =pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent
 GUARD = REPO / 'python' / 'map-guard.py'
 ROOT = REPO / 'example'
 ASK = 'python3 ../python/map.py ask '
 
 
-def hook(data, agent=None):
-    args = ['python3', str(GUARD)] + (['--agent', agent] if agent else [])
-    r = subprocess.run(args, input=data if isinstance(data, str) else json.dumps(data), capture_output=True, text=True, cwd=ROOT)
+# @map tests.guard.cases.shell: the root as the guard writes it in a line, and the lines it writes run in the agent's shell (Git Bash on Windows)
+def root_word(path):
+    """A folder as the guard writes it in a `(cd … && …)`: on Windows with `/` (bash takes a backslash for an escape),
+    quoted when it needs it."""
+    p = str(path).replace('\\', '/') if os.name == 'nt' else str(path)
+    return p if re.fullmatch(r'[A-Za-z0-9@%+=:,./_-]+', p) else "'" + p.replace("'", "'\"'\"'") + "'"
+
+
+WORD = root_word(ROOT)
+
+
+def git_bash():
+    """Git for Windows' bash, found from git (the `bash` on the PATH may be WSL's)."""
+    here = shutil.which('git')
+    for _ in range(3):
+        here = os.path.dirname(here or '')
+        for sub in ('bin', os.path.join('usr', 'bin')):
+            if os.path.isfile(os.path.join(here, sub, 'bash.exe')):
+                return os.path.join(here, sub, 'bash.exe')
+    return shutil.which('bash') or 'bash'
+
+
+def sh(line, cwd):
+    """A shell line run as the agent's shell runs it: sh, or Git Bash on Windows (cmd.exe cannot run what the guard writes)."""
+    if os.name != 'nt':
+        return subprocess.run(line, shell=True, cwd=cwd, capture_output=True, text=True)
+    return subprocess.run([git_bash(), '-c', line], cwd=cwd, capture_output=True, text=True, encoding='utf-8')
+# @end tests.guard.cases.shell
+
+
+def hook(data, agent=None, root=None):
+    """The guard's answer to an event; root: another folder (a copy of the example) for the guard to take as the repository.
+    MAP_GUARD names another implementation's guard to answer it (`node node/map-guard.mjs`, a built map-guard)."""
+    args = (shlex.split(os.environ['MAP_GUARD']) if os.environ.get('MAP_GUARD') else ['python3', str(GUARD)]) + (['--agent', agent] if agent else [])
+    env = {**os.environ, 'MAP_ROOT': str(root)} if root else None
+    r = subprocess.run(args, input=data if isinstance(data, str) else json.dumps(data), capture_output=True, text=True, encoding='utf-8', cwd=root or ROOT, env=env)
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 
-def bash(command, agent=None):
+def bash(command, agent=None, root=None):
     """The ask a refusal names, the line Claude Code runs in its place, or None when the line goes ahead."""
-    out = hook({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_input': {'command': command, 'description': 'd'}, 'cwd': str(ROOT)}, agent)
+    out = hook({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_input': {'command': command, 'description': 'd'}, 'cwd': str(root or ROOT)}, agent, root)
     if not out:
         return None
     o = out['hookSpecificOutput']
@@ -49,7 +86,7 @@ def refusal_line(command, agent=None):
 
 
 def in_place(ask):
-    return f'(cd {ROOT} && {ASK}{ask})'
+    return f'(cd {WORD} && {ASK}{ask})'
 
 
 class Refused(unittest.TestCase):
@@ -80,15 +117,15 @@ class Refused(unittest.TestCase):
 
     def test_claude_code_runs_a_line_of_reads_in_its_place(self):
         self.assertEqual(bash('sed -n 1,5p src/shop/cart.py; echo ---; sed -n 20,40p src/shop/cart.py | head -3'),
-                         f'(cd {ROOT} && {ASK}src/shop/cart.py:1-5; echo ---; {ASK}src/shop/cart.py:20-40 | head -3)')
+                         f'(cd {WORD} && {ASK}src/shop/cart.py:1-5; echo ---; {ASK}src/shop/cart.py:20-40 | head -3)')
         self.assertEqual(bash('ls src/web; wc -l src/web/cart.js; tail -3 src/shop/prices.py | cut -c1-20'),
-                         f'(cd {ROOT} && {ASK}src/web; wc -l src/web/cart.js; {ASK}src/shop/prices.py:28-30 | cut -c1-20)')
+                         f'(cd {WORD} && {ASK}src/web; wc -l src/web/cart.js; {ASK}src/shop/prices.py:28-30 | cut -c1-20)')
         for command in ['grep -rn coupon src; python3 -m unittest discover -s tests', 'sed -n 1,5p src/shop/cart.py | awk "{print}"',
                         'cat src/shop/cart.py LICENSE-none', 'cat $(ls src/shop/*.py)']:
             with self.subTest(command=command):                       # another step, a filter that runs commands: refused
                 self.assertTrue(bash(command).startswith(ASK), command)
         line = bash('cd src/shop && sed -n 1,3p cart.py')
-        r = subprocess.run(line, shell=True, cwd=ROOT / 'src', capture_output=True, text=True)    # from any folder
+        r = sh(line, ROOT / 'src')                                  # from any folder
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('src/shop/cart.py:1-3', r.stdout)
 
@@ -117,14 +154,14 @@ class Refused(unittest.TestCase):
 
     def test_shell_forms_of_a_line_of_reads(self):
         for command, line in [
-            ('cat docs/CART.md 2>&1 | head -3', f'(cd {ROOT} && {ASK}docs/CART.md | head -3)'),
-            ('cat docs/CART.md 2>/dev/null; cat docs/CART.md &>/dev/null', f'(cd {ROOT} && {ASK}docs/CART.md; {ASK}docs/CART.md)'),
-            ('cut -c1-20 src/shop/cart.py', f'(cd {ROOT} && {ASK}src/shop/cart.py | cut -c1-20)'),
-            ('cut -d, -f2 src/shop/cart.py | sort | uniq -c', f'(cd {ROOT} && {ASK}src/shop/cart.py | cut -d, -f2 | sort | uniq -c)'),
-            ('sort -u docs/CART.md', f'(cd {ROOT} && {ASK}docs/CART.md | sort -u)'),
-            ('grep -rn coupon src | sed -n 1,5p', f'(cd {ROOT} && {ASK}coupon --in src | sed -n 1,5p)'),
-            ('sed -n 1,5p src/shop/cart.py | sed -n 2,3p; cat docs/CART.md | wc -l', f'(cd {ROOT} && {ASK}src/shop/cart.py:1-5 | sed -n 2,3p; cat docs/CART.md | wc -l)'),
-            ('for f in a b; do echo $f; done; sed -n 1,5p src/shop/cart.py', f'(cd {ROOT} && for f in a b; do echo $f; done; {ASK}src/shop/cart.py:1-5)'),
+            ('cat docs/CART.md 2>&1 | head -3', f'(cd {WORD} && {ASK}docs/CART.md | head -3)'),
+            ('cat docs/CART.md 2>/dev/null; cat docs/CART.md &>/dev/null', f'(cd {WORD} && {ASK}docs/CART.md; {ASK}docs/CART.md)'),
+            ('cut -c1-20 src/shop/cart.py', f'(cd {WORD} && {ASK}src/shop/cart.py | cut -c1-20)'),
+            ('cut -d, -f2 src/shop/cart.py | sort | uniq -c', f'(cd {WORD} && {ASK}src/shop/cart.py | cut -d, -f2 | sort | uniq -c)'),
+            ('sort -u docs/CART.md', f'(cd {WORD} && {ASK}docs/CART.md | sort -u)'),
+            ('grep -rn coupon src | sed -n 1,5p', f'(cd {WORD} && {ASK}coupon --in src | sed -n 1,5p)'),
+            ('sed -n 1,5p src/shop/cart.py | sed -n 2,3p; cat docs/CART.md | wc -l', f'(cd {WORD} && {ASK}src/shop/cart.py:1-5 | sed -n 2,3p; cat docs/CART.md | wc -l)'),
+            ('for f in a b; do echo $f; done; sed -n 1,5p src/shop/cart.py', f'(cd {WORD} && for f in a b; do echo $f; done; {ASK}src/shop/cart.py:1-5)'),
         ]:
             with self.subTest(command=command):
                 self.assertEqual(bash(command), line)
@@ -146,7 +183,7 @@ class Refused(unittest.TestCase):
             ('git commit -m "a b" ; cat docs/CART.md', f'git commit -m "a b" ; {ASK}docs/CART.md'),
             ('cat docs/CART.md; ls /tmp', ASK + 'docs/CART.md; ls /tmp'),                                    # a read outside the repository stays as it is
             ('git -C .. status; cat docs/CART.md', f'git -C .. status; {ASK}docs/CART.md'),             # git of another folder is no read of this repository
-            ('cd src && cat shop/cart.py && npm test', f'cd src && (cd {ROOT} && {ASK}src/shop/cart.py) && npm test'),   # the ask runs from the root
+            ('cd src && cat shop/cart.py && npm test', f'cd src && (cd {WORD} && {ASK}src/shop/cart.py) && npm test'),   # the ask runs from the root
             ('cat docs/CART.md | wc -l; grep -rn coupon src; cargo test', f'cat docs/CART.md | wc -l; {ASK}coupon --in src; cargo test'),
         ]
         for command, line in cases:
@@ -172,10 +209,10 @@ class Refused(unittest.TestCase):
 
             def ask(command, agent=None):
                 data = {'hook_event_name': 'PreToolUse', 'tool_name': 'Bash', 'tool_input': {'command': command}, 'cwd': str(tmp)}
-                r = subprocess.run(['python3', str(GUARD)] + (['--agent', agent] if agent else []), input=json.dumps(data), capture_output=True, text=True, cwd=tmp, env=env)
+                r = subprocess.run(['python3', str(GUARD)] + (['--agent', agent] if agent else []), input=json.dumps(data), capture_output=True, text=True, encoding='utf-8', cwd=tmp, env=env)
                 return json.loads(r.stdout) if r.stdout.strip() else None
             out = ask('tools/map ask a 2>&1 | head -5; git status -s; sed -n 1,5p src/a.py 2>&1')['hookSpecificOutput']        # the map's own step as written
-            self.assertEqual(out['updatedInput']['command'], f'(cd {tmp} && tools/map ask a 2>&1 | head -5; git status -s; tools/map ask src/a.py:1-5)')
+            self.assertEqual(out['updatedInput']['command'], f'(cd {root_word(tmp)} && tools/map ask a 2>&1 | head -5; git status -s; tools/map ask src/a.py:1-5)')
             for command in ['grep -rn x src; cargo test', 'sed -n 1,5p src/a.py && npm test | tail -3', 'cat src/a.py; ls /tmp; git commit -m x',
                             'cd src && head -3 a.py; make']:
                 for agent in (None, 'codex'):
@@ -238,6 +275,97 @@ class Allowed(unittest.TestCase):
 
 
 # @end tests.guard.cases.allowed
+
+
+# @map tests.guard.cases.places: one rule for every tool, on a copy of the example: a place the map does not index (left out, or holding no file it reads) goes ahead for Glob, Grep, Read and Bash alike, and a Windows path names the same place in any of its forms
+class Places(unittest.TestCase):
+    LEFT_OUT = [('.claude/redesign/design', 'review.html'),      # map.json ignore
+                ('fixtures', 'cases.md'),                         # map.json guard.skip
+                ('scratch', 'notes.md'),                          # .gitignore
+                ('vendor/lib', 'lib.js')]                         # one of the usual folders
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = pathlib.Path(os.path.realpath(tempfile.mkdtemp(prefix='map-places-')))
+        cls.root = cls.tmp / 'example'
+        shutil.copytree(ROOT, cls.root, ignore=shutil.ignore_patterns('__pycache__'))
+        cfg = json.loads((cls.root / 'map.json').read_text(encoding='utf-8'))
+        cfg['ignore'], cfg['guard'] = ['.claude/redesign/'], {'skip': ['fixtures/']}
+        (cls.root / 'map.json').write_text(json.dumps(cfg), encoding='utf-8')
+        (cls.root / '.gitignore').write_text('scratch/\n', encoding='utf-8')
+        for folder, name in cls.LEFT_OUT + [('assets', 'logo.png'), ('deep/a', 'logo.png'), ('deep/a/b', 'notes.md')]:  # assets: holds no file the map reads; deep: one, two folders down
+            (cls.root / folder).mkdir(parents=True, exist_ok=True)
+            (cls.root / folder / name).write_text('<p>Roche limit</p>\n', encoding='utf-8')
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def ask(self, tool, given):
+        """The ask the guard's refusal of this tool call names (the line Claude Code runs in place of a shell line), or None when it goes ahead."""
+        out = hook({'tool_name': tool, 'tool_input': given, 'cwd': str(self.root)}, root=self.root)
+        o = out and out['hookSpecificOutput']
+        return o and (o['updatedInput']['command'] if o['permissionDecision'] == 'allow' else o['permissionDecisionReason'].split('Run instead:\n  ')[1])
+
+    def test_a_place_the_map_leaves_out_goes_ahead_for_every_tool(self):
+        for k, (folder, name) in enumerate(self.LEFT_OUT):
+            file = str(self.root / folder / name)
+            calls = [('Glob', {'pattern': f'{folder}/*'}), ('Grep', {'pattern': 'Roche', 'path': folder}), ('Read', {'file_path': file}),
+                     ('Bash', {'command': f'grep -n Roche {folder}/{name}'}), ('Bash', {'command': f'ls {folder}'})]
+            if k == 0:                                                   # the folder of the report, in more forms
+                calls += [('Glob', {'pattern': '*', 'path': folder}), ('Glob', {'pattern': f'{folder}/**/{name}'}), ('Glob', {'pattern': file.replace('\\', '/')}),
+                          ('Glob', {'pattern': '**/*', 'path': str(self.root / folder)}), ('Bash', {'command': f'cat {folder}/{name}'})]
+            for tool, given in calls:
+                with self.subTest(folder=folder, tool=tool, given=given):
+                    self.assertIsNone(self.ask(tool, given))
+        for tool, given in [('Glob', {'pattern': 'assets/*'}), ('Grep', {'pattern': 'Roche', 'path': 'assets'}), ('Bash', {'command': 'grep -rn Roche assets'}),
+                            ('Bash', {'command': 'ls assets'}), ('Read', {'file_path': str(self.root / 'assets/logo.png')})]:
+            with self.subTest(folder='assets', tool=tool, given=given):     # a folder holding no file the map reads: its ask would answer nothing
+                self.assertIsNone(self.ask(tool, given))
+        for tool, given, ask in [('Glob', {'pattern': 'src/web/*'}, "'src/web/*'"), ('Grep', {'pattern': 'coupon', 'path': 'src'}, 'coupon --in src'),
+                                 ('Read', {'file_path': str(self.root / 'src/shop/cart.py')}, 'src/shop/cart.py'),
+                                 ('Bash', {'command': 'grep -n coupon src/shop/cart.py'}, 'coupon --in src/shop/cart.py'),
+                                 ('Grep', {'pattern': 'Roche', 'path': 'deep'}, 'Roche --in deep'), ('Bash', {'command': 'grep -rn Roche deep'}, 'Roche --in deep')]:
+            with self.subTest(tool=tool):                                # the places the map reads, in the same copy, are still refused
+                self.assertIn(ASK + ask, self.ask(tool, given))
+        for agent, event in [('gemini', {'hook_event_name': 'BeforeTool', 'tool_name': 'glob', 'tool_input': {'pattern': '.claude/redesign/design/*'}}),
+                             ('copilot', {'toolName': 'glob', 'toolArgs': json.dumps({'pattern': 'fixtures/*'})})]:
+            with self.subTest(agent=agent):
+                self.assertIsNone(hook({**event, 'cwd': str(self.root)}, agent, self.root))
+        out = hook({'hook_event_name': 'BeforeTool', 'tool_name': 'glob', 'tool_input': {'pattern': '**/*.js', 'dir_path': 'src'}, 'cwd': str(self.root)}, 'gemini', self.root)
+        self.assertTrue(out['reason'].endswith(ASK + "'src/**/*.js'"))
+
+    def test_a_glob_is_refused_only_for_files_the_map_reads_under_its_pattern(self):
+        """The ask answers a pattern as fnmatch on the path: a pattern it would answer with 0 files is not sent to it."""
+        here = str(self.root).replace('\\', '/')
+        for given, ask in [({'pattern': '**/*.js', 'path': 'src'}, "'src/**/*.js'"), ({'pattern': 'src/web/*'}, "'src/web/*'"),
+                           ({'pattern': 'src/shop/cart.py'}, 'src/shop/cart.py'), ({'pattern': 'src'}, 'src'),
+                           ({'pattern': f'{here}/src/web/*'}, "'src/web/*'"), ({'pattern': '**/*.md', 'path': here}, "'**/*.md'")]:
+            with self.subTest(given=given):
+                self.assertEqual(self.ask('Glob', given), ASK + ask)
+        for given in [{'pattern': 'assets/*'}, {'pattern': '**/*.png'}, {'pattern': 'docs/*.md', 'path': 'src'}, {'pattern': 'src/**/*.rs'},
+                      {'pattern': '*.js'}, {'pattern': 'src/nothing.py'}, {'pattern': '../*/x'}, {'pattern': '/tmp/*/x'}, {'pattern': 'map/*.yaml'}]:
+            with self.subTest(given=given):                              # no file the map reads, or no glob the ask takes: goes ahead
+                self.assertIsNone(self.ask('Glob', given))
+
+    @unittest.skipUnless(os.name == 'nt', 'the path forms of Windows and Git Bash')
+    def test_a_windows_path_names_the_same_place_in_every_form(self):
+        real = os.path.realpath(self.root)                                  # C:\Users\…\example
+        drive, rest = os.path.splitdrive(real)
+        win, rest = real.replace('\\', '/'), rest.replace('\\', '/')       # C:/Users/…/example and /Users/…/example
+        low, cap = drive[0].lower(), drive[0].upper()
+        forms = {'an MSYS path': f'grep -rn coupon /{low}{rest}/src', 'cd to an MSYS path': f'cd /{low}{rest} && grep -rn coupon src',
+                 'cd to a path with /': f'cd {win} && grep -rn coupon src', 'a quoted backslash path': f"grep -rn coupon '{real}\\src'",
+                 'an MSYS path, capital drive': f'grep -rn coupon /{cap}{rest}/src', 'cd to an MSYS path, capital drive': f'cd /{cap}{rest} && grep -rn coupon src',
+                 'a path with a lower-case drive': f'grep -rn coupon {low}:{rest}/src', 'cd to a lower-case drive': f'cd {low}:{rest} && grep -rn coupon src',
+                 'a cygdrive path': f'grep -rn coupon /cygdrive/{low}{rest}/src', 'cd to a cygdrive path': f'cd /cygdrive/{low}{rest} && grep -rn coupon src'}
+        for agent in ('codex', None):
+            plain = bash('grep -rn coupon src', agent, self.root)
+            self.assertIn(ASK + 'coupon --in src', plain)
+            for name, line in forms.items():
+                with self.subTest(form=name, agent=agent):
+                    self.assertEqual(bash(line, agent, self.root), plain)
+# @end tests.guard.cases.places
 
 
 # @map tests.guard.cases.agents: each agent's hook format read and answered in its own shape, bad input, and the settings install writes

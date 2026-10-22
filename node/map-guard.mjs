@@ -7,16 +7,18 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function findRoot() {
   if (process.env.MAP_ROOT) return realpath(process.env.MAP_ROOT);
   const here = path.dirname(fs.realpathSync(process.argv[1]));
   for (const start of [process.cwd(), here]) for (const mark of ['map.json', '.git']) {
     let base = start;
-    for (;;) { if (fs.existsSync(path.join(base, mark))) return base; const up = path.dirname(base); if (up === base) break; base = up; }
+    for (;;) { if (fs.existsSync(path.join(base, mark))) return rootForm(base); const up = path.dirname(base); if (up === base) break; base = up; }
   }
-  return process.cwd();
+  return rootForm(process.cwd());
 }
+const rootForm = p => process.platform === 'win32' ? realpath(p) : p;     // Windows: the form realpath gives the paths under it (drive letter's case)
 function realpath(p) {
   const full = path.resolve(p);
   try { return fs.realpathSync.native(full); } catch { /* not there: resolve what exists */ }
@@ -50,11 +52,26 @@ const REASON_LINE = "This repository's code and docs are read and located throug
 const NOTE = 'map-guard ran this line through the map, each read of the code or the docs as its ask (AGENTS.md, "Finding code"; '
   + 'next time, ask every question of a round in one call):\n  ';
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
-const expanduser = p => p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
+const WIN = process.platform === 'win32';
+// A Git Bash drive path (/c/Users/x, /cygdrive/c/x) as Windows names it (C:/Users/x); null on other systems and for any other path.
+function msysPath(p) {
+  if (!WIN) return null;
+  const m = /^(?:\/cygdrive)?\/([A-Za-z])(\/[\s\S]*)?$/.exec(p);
+  return m ? `${m[1].toUpperCase()}:${m[2] || '/'}` : null;
+}
+// ~ is $HOME, else the profile, on Windows, where Git Bash's drive paths are named as Windows does; elsewhere the home of the user.
+function expanduser(p) {
+  if (!WIN) return p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
+  if (p.startsWith('~')) { const home = process.env.HOME || process.env.USERPROFILE; if (home) return path.join(home, p.slice(1).replace(/^\/+/, '')); }
+  return msysPath(p) || p;
+}
+const normpath = p => WIN ? path.normalize(p).replace(/\\/g, '/') : path.normalize(p);   // Windows: with `/`, which the agent's bash reads as it is
+const rootWord = () => quoteWord(WIN ? ROOT.replace(/\\/g, '/') : ROOT);                    // the root as a word of the shell line
 
 function inside(p, base) {
   const full = realpath(path.resolve(base, expanduser(p)));
-  const rel = path.relative(ROOT, full);
+  let rel = path.relative(ROOT, full);
+  if (process.platform === 'win32') { if (path.isAbsolute(rel)) return null; rel = rel.split(path.sep).join('/'); }   // another drive; agents write `/` on Windows too
   return rel.startsWith('..') ? null : (rel === '' ? '.' : rel);
 }
 let IGNORED = null;
@@ -82,12 +99,12 @@ function ignored(rel) {
     let lines = []; try { lines = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8').split('\n'); } catch { lines = []; }
     IGNORED = [...lines.map(l => l.trim()).filter(l => l && !l.startsWith('#')), ...SKIPPED];
   }
-  const parts = rel.split(path.sep);
+  const parts = rel.split('/');
   if (parts.slice(0, -1).some(x => SKIP.has(x)) || SKIP.has(parts[0])) return true;
   for (const p of IGNORED) {
     if (!p) continue;
     const folder = p.endsWith('/'), q = p.replace(/^\/+|\/+$/g, '');
-    if (q.includes('/')) { if (rel === q || rel.startsWith(q + path.sep) || fnmatch(rel, q)) return true; }
+    if (q.includes('/')) { if (rel === q || rel.startsWith(q + '/') || fnmatch(rel, q)) return true; }
     else { const isDir = (() => { try { return fs.statSync(path.join(ROOT, rel)).isDirectory(); } catch { return false; } })(); if ((folder && !isDir ? parts.slice(0, -1) : parts).some(n => fnmatch(n, q))) return true; }
   }
   return false;
@@ -108,12 +125,40 @@ function mapped(rel, folderOk = true) {
   if (rel === null || rel === undefined) return false;
   if (/[*?[]/.test(rel)) return expand(rel).slice(0, 50).some(x => mapped(x, folderOk));
   if (rel === '.') return folderOk;
-  if (rel === 'map.yaml' || rel.split(path.sep)[0] === 'map') return false;
+  if (rel === 'map.yaml' || rel.split('/')[0] === 'map') return false;
   const full = path.join(ROOT, rel);
   let st; try { st = fs.statSync(full); } catch { return false; }
-  if (st.isDirectory()) return folderOk && !ignored(rel);
+  if (st.isDirectory()) return folderOk && !ignored(rel) && holdsMapped(rel);
   return isText(rel) && !ignored(rel);
 }
+// @map map.guard.scope.folder: whether a folder holds a file the map reads (one that holds none is never sent to an ask)
+const FOLDER_SEEN = 50000;                              // files looked at in a folder; past them it is taken to hold one
+const HOLDS = new Map();
+// Whether a folder holds a file the map reads, below the folders it leaves out: one that holds none is not sent to an ask, which would
+// answer nothing. Depth first, folders in order, a link to a folder not entered (as the walk of a Glob does); once per folder.
+function holdsMapped(rel) {
+  if (!HOLDS.has(rel)) HOLDS.set(rel, scanFolder(rel));
+  return HOLDS.get(rel);
+}
+function scanFolder(rel) {
+  let seen = 0;
+  for (const todo = [rel]; todo.length;) {
+    const here = todo.pop(), dirs = [];
+    let entries; try { entries = fs.readdirSync(path.join(ROOT, here), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const at = `${here}/${e.name}`;
+      let dir = e.isDirectory();
+      if (e.isSymbolicLink()) { try { dir = fs.statSync(path.join(ROOT, at)).isDirectory(); } catch { dir = false; } if (dir) continue; }
+      if (dir) { if (!SKIP.has(e.name) && !ignored(at)) dirs.push(e.name); continue; }
+      seen++;
+      if (isText(at) && !ignored(at)) return true;
+    }
+    if (seen > FOLDER_SEEN) return true;
+    for (const d of dirs.sort().reverse()) todo.push(`${here}/${d}`);
+  }
+  return false;
+}
+// @end map.guard.scope.folder
 const SAFE = /^[A-Za-z0-9@%+=:,./_-]+$/;
 const quoteWord = w => (!w ? "''" : SAFE.test(w) ? w : "'" + w.split("'").join("'\"'\"'") + "'");
 const quote = words => words.map(quoteWord).join(' ');
@@ -205,7 +250,7 @@ function grepQuestion(words, base) {
   const rels = paths_.length ? paths_.map(p => inside(p, base)) : [inside('.', base)];
   if (!rels.some(r => mapped(r))) return null;
   let places = rels.filter(r => r && r !== '.');
-  if (includes.length) places = (places.length ? places : ['']).flatMap(p => includes.map(g => path.join(p, '*' + g.replace(/^\*+/, '')))).map(p => p.replace(/^\/+/, ''));
+  if (includes.length) places = (places.length ? places : ['']).flatMap(p => includes.map(g => path.posix.join(p, '*' + g.replace(/^\*+/, '')))).map(p => p.replace(/^\/+/, ''));
   const pattern = pats_.join('|');
   if (pattern.includes('@map')) { const tag = /@map\s+([\w.-]+)/.exec(pattern); return tag ? [tag[1]] : (places.length ? places : ['.']); }
   if (/^\^#+.*$/.test(pattern) && places.every(p => p.endsWith('.md'))) return places;
@@ -276,7 +321,7 @@ function listQuestion(words, base) {
     const roots = words.slice(1).filter(a => !a.startsWith('-') && a !== pattern).slice(0, 1); const root = roots.length ? roots[0] : '.';
     const rel = inside(root, base);
     if (!mapped(rel) || (rel === '.' && !pattern)) return null;
-    return [pattern ? path.join(rel === '.' ? '' : rel, '*' + pattern.replace(/^\*+/, '')) : rel];
+    return [pattern ? path.posix.join(rel === '.' ? '' : rel, '*' + pattern.replace(/^\*+/, '')) : rel];
   }
   const rels = args.map(a => inside(a, base)).filter(r => mapped(r) && r !== '.');
   return rels.length ? rels : null;
@@ -410,13 +455,14 @@ function steps(line, cwd) {
     if (kind === 'cd') {
       const target = words.length === 2 ? words[1] : null;
       base = target === null || target.includes('$') || target === '-' ? null : path.resolve(base, expanduser(target));
+      if (base !== null && WIN) base = normpath(base);
     }
     if (base === null && k + 1 < segs.length) return null;
   }
   return out;
 }
 function anchored(base, text) {
-  return same_(base, ROOT) ? text : `(cd ${quoteWord(ROOT)} && ${text})`;
+  return same_(base, ROOT) ? text : `(cd ${rootWord()} && ${text})`;
 }
 
 // @map map.guard.commands.rewrite.readonly: the steps that only read and touch nothing outside the repository (git's read-only forms, which, --version, date, counts, filters), and the reads safe to keep as written
@@ -538,7 +584,7 @@ function rebuild(line, cwd, inPlace) {
 function rewrite(line, cwd) {
   const built = rebuild(line, cwd, true);
   if (!built || !built[1] || !built[2]) return null;
-  return `(cd ${quoteWord(ROOT)} && ` + built[0].trim() + ')';
+  return `(cd ${rootWord()} && ` + built[0].trim() + ')';
 }
 function resend(line, cwd) {
   const built = rebuild(line, cwd, false);
@@ -588,6 +634,45 @@ function readQuestionTool(filePath, cwd, offset, limit) {
   if (!mapped(rel, false) || limit || offset) return null;
   return ASK + quote([rel]);
 }
+// @map map.guard.decide.glob: the ask for a Glob, only when the map holds a file the pattern names (never an ask that answers 0 files)
+const GLOB_WILD = /[*?[{]/;
+const GLOB_SEEN = 50000;                                // files looked at for a match; past them the call goes ahead
+// The ask for a Glob, or null when it goes ahead, as a Grep, a Read or a shell line on the same place does. The pattern is split at
+// its first wildcard segment (* ? [ {): the literal folder before it, under the tool's folder, must be a place the map reads (inside
+// the repository, not ignored, not the map's own), and the pattern, matched as ask matches it (fnmatch on the path less its leading
+// . and /), must name a file the map reads there. A pattern with no wildcard is that file or folder.
+function globQuestion(folder, pattern, cwd) {
+  let pat = expanduser(pattern);
+  if (WIN) pat = pat.replace(/\\/g, '/');               // a Windows pattern may use either separator
+  const parts = pat.split('/');
+  let k = parts.findIndex(s => GLOB_WILD.test(s)); if (k < 0) k = parts.length;
+  const lit = parts.slice(0, k).join('/') || (pat.startsWith('/') ? '/' : '');
+  const at = /^[A-Za-z]:$/.test(lit) ? lit + '/' : lit;
+  const rel = inside(path.isAbsolute(at) ? at : path.join(folder, at), cwd);
+  if (rel === null) return null;
+  const rest = parts.slice(k).join('/');
+  if (!rest) return mapped(rel) && rel !== '.' ? ASK + quote([rel]) : null;
+  const q = rel === '.' ? rest : rel + '/' + rest;
+  if (!mapped(rel) || !q.includes('/') || !/[*?]/.test(q) || /[\\|()+^$]/.test(q)) return null;   // ignored, or a pattern that ask does not read as a glob
+  const want = q.replace(/^[./]+/, '');
+  let seen = 0;
+  for (const todo = [rel]; todo.length;) {              // the folders under the pattern's, in order, those the map leaves out not entered
+    const here = todo.pop(), dirs = [];
+    let entries; try { entries = fs.readdirSync(path.join(ROOT, here), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const at_ = here === '.' ? e.name : `${here}/${e.name}`;
+      let dir = e.isDirectory();
+      if (e.isSymbolicLink()) { try { dir = fs.statSync(path.join(ROOT, at_)).isDirectory(); } catch { dir = false; } if (dir) continue; }   // a link to a folder is not entered
+      if (dir) { if (!SKIP.has(e.name) && !ignored(at_)) dirs.push(e.name); continue; }
+      seen++;
+      if (fnmatch(at_, want) && mapped(at_, false)) return ASK + quote([q]);
+    }
+    if (seen > GLOB_SEEN) break;
+    for (const d of dirs.sort().reverse()) todo.push(here === '.' ? d : `${here}/${d}`);
+  }
+  return null;
+}
+// @end map.guard.decide.glob
 function normalise(agent, data) {
   const roots = data.workspace_roots;
   let cwd = data.cwd || (Array.isArray(roots) && roots.length ? roots[0] : ROOT);
@@ -625,7 +710,7 @@ function replacement(agent, data) {
     const words = ['rg', ...(given['-i'] || given.case_insensitive ? ['-i'] : []), '-e', given.pattern || '', folder, ...(given.glob ? ['--glob', given.glob] : []), ...(given.include ? ['--glob', given.include] : [])];
     const q = grepQuestion(words, cwd); return q ? ASK + quote(q) : null;
   }
-  if (kind === 'glob') { const rel = inside(folder, cwd); return mapped(rel) ? ASK + quote([path.join(rel === null || rel === '.' ? '' : rel, given.pattern || '')]) : null; }
+  if (kind === 'glob') return globQuestion(folder, given.pattern || '', cwd);
   if (kind === 'list') { const rel = inside(folder, cwd); return mapped(rel) && rel !== '.' ? ASK + quote([rel]) : null; }
   return null;
 }
@@ -656,7 +741,7 @@ const SETTINGS = {
   claude: ['.claude/settings.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash|Read|Grep|Glob', hooks: [{ type: 'command', command: `node "$CLAUDE_PROJECT_DIR/${me}"` }] }] } })],
   codex: ['.codex/hooks.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "$(git rev-parse --show-toplevel)/${me}" --agent codex`, statusMessage: 'map-guard' }] }] } })],
   cursor: ['.cursor/hooks.json', me => ({ version: 1, hooks: { beforeShellExecution: [{ command: `node ${me} --agent cursor` }], beforeReadFile: [{ command: `node ${me} --agent cursor` }] } })],
-  copilot: ['.github/hooks/map-guard.json', me => ({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: `node ${me} --agent copilot`, cwd: '.', timeoutSec: 10 }] } })],
+  copilot: ['.github/hooks/map-guard.json', me => ({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: `node ${me} --agent copilot`, ...(WIN ? { powershell: `node ${me} --agent copilot` } : {}), cwd: '.', timeoutSec: 10 }] } })],   // Windows: the same command for PowerShell
   gemini: ['.gemini/settings.json', me => ({ hooks: { BeforeTool: [{ matcher: 'run_shell_command|read_file|read_many_files|grep_search|glob|list_directory', hooks: [{ name: 'map-guard', type: 'command', command: `node "$GEMINI_PROJECT_DIR/${me}" --agent gemini`, timeout: 5000 }] }] } })],
 };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -688,5 +773,5 @@ function main(argv) {
   if (out) process.stdout.write(JSON.stringify(out) + '\n');
 }
 export { replacement, shellQuestion };
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(new URL(import.meta.url).pathname)) main(process.argv.slice(2));
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) main(process.argv.slice(2));
 // @end map.guard.decide
