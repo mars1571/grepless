@@ -227,9 +227,11 @@ function commands(line, cwd) {
   return out;
 }
 function grepParts(words) {
-  const pats = [], paths = [], includes = [], flags = new Set(); let i = 1;
+  const pats = [], paths = [], includes = [], flags = new Set(); let i = 1, forced = false;
   while (i < words.length) {
     const a = words[i];
+    if (forced) { paths.push(a); forced = false; i++; continue; }          // the word after `--` is never an option, even one starting with `-`: the pattern, or a place when -e gave it
+    if (a === '--') { forced = true; i++; continue; }
     if (a === '-e' || a === '--regexp') { pats.push(i + 1 < words.length ? words[i + 1] : ''); i += 2; continue; }
     if (a.startsWith('--include=')) includes.push(a.slice(10));
     else if (['-A', '-B', '-C', '-m', '--max-count', '-g', '--glob', '-t', '--type', '--include', '--exclude'].includes(a)) { if (['-g', '--glob', '--include'].includes(a)) includes.push(i + 1 < words.length ? words[i + 1] : ''); i += 2; continue; }

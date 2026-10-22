@@ -365,9 +365,13 @@ def commands(line, cwd):
 
 def grep_parts(words):
     """(patterns, paths, includes, flags) of a grep-like search."""
-    pats, paths, includes, flags, i = [], [], [], set(), 1
+    pats, paths, includes, flags, i, ended = [], [], [], set(), 1, False
     while i < len(words):
         a = words[i]
+        if a == '--' and not ended:                              # the end of options: the one word after it is never an option, even as `--coupon`
+            paths += words[i + 1:i + 2]                          # the pattern when none was given (-e), else a place; the words after it read as before
+            i, ended = i + 2, True
+            continue
         if a in ('-e', '--regexp'):
             pats.append(words[i + 1] if i + 1 < len(words) else '')
             i += 2

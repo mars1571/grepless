@@ -348,6 +348,18 @@ class Places(unittest.TestCase):
             with self.subTest(given=given):                              # no file the map reads, or no glob the ask takes: goes ahead
                 self.assertIsNone(self.ask('Glob', given))
 
+    def test_after_the_end_of_options_the_first_word_is_the_pattern(self):
+        """`--` ends the options: the word after it is the pattern even when it starts with `-`, as with -e, and the rest are places."""
+        for line, same in [('grep -rn -- --coupon src', 'grep -rn -e --coupon src'),
+                           ('grep -rnoE -- "--(a|b)" src --include=*.py', 'grep -rnoE -e "--(a|b)" src --include=*.py'),
+                           ('rg -n -- --coupon src', 'rg -n -e --coupon src'), ('grep -rn -- coupon src/shop', 'grep -rn coupon src/shop')]:
+            with self.subTest(line=line):
+                self.assertEqual(bash(line, None, self.root), bash(same, None, self.root))
+        self.assertIn(ASK + '--coupon --in src', bash('grep -rn -- --coupon src', None, self.root))
+        for line in ['grep -rnoE -- "--(a|b)" .claude/redesign/design --include=*.html', 'rg -n -- --limit fixtures', 'grep -rn -- -x assets']:
+            with self.subTest(line=line):                                # the place after the pattern is one the map leaves out
+                self.assertIsNone(bash(line, None, self.root))
+
     @unittest.skipUnless(os.name == 'nt', 'the path forms of Windows and Git Bash')
     def test_a_windows_path_names_the_same_place_in_every_form(self):
         real = os.path.realpath(self.root)                                  # C:\Users\…\example

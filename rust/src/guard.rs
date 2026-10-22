@@ -447,12 +447,19 @@ fn unique(xs: &[String]) -> Vec<String> {
     xs.iter().filter(|x| seen.insert((*x).clone())).cloned().collect()
 }
 
+// @map map.guard.commands.search: the parts of a grep-like search (pattern, places, filters, flags) and its map question
 pub fn grep_parts(words: &[String]) -> (Vec<String>, Vec<String>, Vec<String>, HashSet<String>) {
     let (mut pats, mut paths, mut includes) = (Vec::new(), Vec::new(), Vec::new());
     let mut flags: HashSet<String> = HashSet::new();
-    let mut i = 1;
+    let (mut i, mut ended) = (1, false);
     while i < words.len() {
         let a = &words[i];
+        if a == "--" && !ended {                                 // end of options: the one word after it is no option, the pattern unless -e gave it, else a place
+            ended = true;
+            if let Some(w) = words.get(i + 1) { paths.push(w.clone()); }
+            i += 2;
+            continue;
+        }
         if a == "-e" || a == "--regexp" {
             pats.push(words.get(i + 1).cloned().unwrap_or_default());
             i += 2;
@@ -510,6 +517,7 @@ pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
     if !places.is_empty() { out.push("--in".into()); out.push(places.join(",")); }
     Some(out)
 }
+// @end map.guard.commands.search
 
 fn count_lines(rel: &str) -> usize {
     let text = std::fs::read_to_string(g().root.join(rel)).unwrap_or_default();

@@ -712,12 +712,18 @@ var tagRx = regexp.MustCompile(`@map\s+([\w.-]+)`)
 var headingPat = regexp.MustCompile(`^\^#+.*$`)
 var basicRx = regexp.MustCompile(`\\([|(){}+?])|([|(){}+?])`)
 
-// grepParts: (patterns, paths, includes, flags) of a grep-like search.
+// grepParts: (patterns, paths, includes, flags) of a grep-like search. The word after `--` is no option even when it starts
+// with `-`: it is the pattern (unless -e gave it) or a place; the words after it are read as before, so `src --include=*.py` still filters.
 func grepParts(words []string) (pats, paths, includes []string, flags map[string]bool) {
 	flags = map[string]bool{}
+	ended, literal := false, false
 	for i := 1; i < len(words); i++ {
 		a := words[i]
 		switch {
+		case literal:
+			paths, literal = append(paths, a), false
+		case a == "--" && !ended:
+			ended, literal = true, true
 		case a == "-e" || a == "--regexp":
 			if i+1 < len(words) {
 				pats = append(pats, words[i+1])
