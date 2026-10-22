@@ -11,6 +11,7 @@ pub struct Guard {
     pub root: PathBuf,
     pub ask: String,
     skipped: Vec<String>,
+    translate: bool,                                   // guard.subagents "translate": a subagent's read line runs in its place too
     text: HashSet<String>,
     ignored: Mutex<Option<Vec<String>>>,
 }
@@ -131,7 +132,8 @@ pub fn setup() {
     if let Some(f) = cfg.get("forms").and_then(|f| f.as_object()) {
         text.extend(f.keys().cloned());
     }
-    let _ = G.set(Guard { root, ask: format!("{} ask ", command), skipped, text, ignored: Mutex::new(None) });
+    let translate = cfg.get("guard").and_then(|g| g.get("subagents")).and_then(|v| v.as_str()) == Some("translate");
+    let _ = G.set(Guard { root, ask: format!("{} ask ", command), skipped, translate, text, ignored: Mutex::new(None) });
 }
 
 /// The path relative to the repository, or None when it is outside it.
@@ -479,13 +481,27 @@ pub fn grep_parts(words: &[String]) -> (Vec<String>, Vec<String>, Vec<String>, H
     (pats, paths, includes, flags)
 }
 
-pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
-    let (pats, paths, includes, flags) = grep_parts(words);
+/// Python's re.escape: regex::escape, and the white space escaped too.
+fn py_escape(s: &str) -> String {
+    regex::escape(s).chars().map(|c| if c.is_ascii_whitespace() || c == '\u{b}' { format!("\\{}", c) } else { c.to_string() }).collect()
+}
+
+/// Whether a word has a wildcard (`*`, `?` or `[`).
+fn wild(s: &str) -> bool { s.contains(['*', '?', '[']) }
+
+/// The ask for a grep-like search over the code or the docs, or None when it searches elsewhere. git: `git grep`, whose pathspecs with a
+/// wildcard and no `/` (`'*.rs'`) match at any depth (they are includes, as grep's --include) and whose magic pathspecs (`:!tests`) are left out.
+pub fn grep_question(words: &[String], base: &str, git: bool) -> Option<Vec<String>> {
+    let (pats, mut paths, mut includes, flags) = grep_parts(words);
+    if git {
+        includes.extend(paths.iter().filter(|p| wild(p) && !p.contains('/') && !p.starts_with(':')).cloned());
+        paths.retain(|p| !p.starts_with(':') && !(wild(p) && !p.contains('/')));
+    }
     if ["c", "q", "l", "L", "--count", "--quiet", "--silent", "--files-with-matches", "--files-without-match"].iter().any(|f| flags.contains(*f)) { return None; }
     let recursive = matches!(words[0].as_str(), "rg" | "ag" | "ack") || ["r", "R", "--recursive"].iter().any(|f| flags.contains(*f));
     if paths.is_empty() && !recursive { return None; }
     let rels: Vec<Option<String>> = if paths.is_empty() { vec![inside(".", base)] } else { paths.iter().map(|p| inside(p, base)).collect() };
-    if !rels.iter().any(|r| mapped(r.as_deref(), true)) { return None; }
+    if !rels.iter().any(|r| mapped(r.as_deref(), true) || mapped_glob(r.as_deref())) { return None; }
     let mut places: Vec<String> = rels.iter().flatten().filter(|r| *r != ".").cloned().collect();
     if !includes.is_empty() {
         let bases = if places.is_empty() { vec![String::new()] } else { places.clone() };
@@ -508,7 +524,7 @@ pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
         if !places.is_empty() { out.push("--in".into()); out.push(places.join(",")); }
         return Some(out);
     }
-    let mut r = if flags.contains("F") { regex::escape(&pattern) }
+    let mut r = if flags.contains("F") { py_escape(&pattern) }
         else if flags.contains("E") || flags.contains("P") || matches!(words[0].as_str(), "egrep" | "rg" | "ag" | "ack") { pattern.clone() }
         else { rx(r"\\([|(){}+?])|([|(){}+?])").replace_all(&pattern, |c: &regex::Captures| c.get(1).map(|m| m.as_str().to_string()).unwrap_or_else(|| format!("\\{}", &c[2]))).to_string() };
     if flags.contains("w") { r = format!("\\b(?:{})\\b", r); }
@@ -516,6 +532,16 @@ pub fn grep_question(words: &[String], base: &str) -> Option<Vec<String>> {
     let mut out = vec![r];
     if !places.is_empty() { out.push("--in".into()); out.push(places.join(",")); }
     Some(out)
+}
+
+/// Whether a path with a wildcard in a folder of it (src/**/*.rs) names a place the map reads: the folder before the first wildcard
+/// segment is one (mapped() answers for a wildcard in the last segment only).
+fn mapped_glob(rel: Option<&str>) -> bool {
+    let Some(rel) = rel else { return false };
+    if !wild(rel) { return false; }
+    let parts: Vec<&str> = rel.split('/').collect();
+    let k = parts.iter().position(|s| wild(s)).unwrap();
+    k < parts.len() - 1 && (k == 0 || mapped(Some(&parts[..k].join("/")), true))
 }
 // @end map.guard.commands.search
 
@@ -761,9 +787,17 @@ fn is_map(words: &[String]) -> bool {
 fn whole(words: &[String], base: &str) -> bool {
     let mut tool = words[0].rsplit('/').next().unwrap_or("").to_string();
     let mut words: Vec<String> = words.to_vec();
-    if tool == "git" && words.get(1).map(|x| x == "grep").unwrap_or(false) { tool = "grep".into(); words = words[1..].to_vec(); }
+    let mut base = base.to_string();
+    let git = if tool == "git" { git_grep(&words, &base) } else { None };
+    let is_git = git.is_some();
+    if let Some((w, b)) = git { tool = "grep".into(); words = w; base = b; }
+    let base = base.as_str();
     let mut w = vec![tool.clone()]; w.extend(words[1..].iter().cloned());
-    if search_set().contains(tool.as_str()) { return grep_parts(&w).1.iter().all(|p| mapped(inside(p, base).as_deref(), true)); }
+    if search_set().contains(tool.as_str()) {
+        let mut paths = grep_parts(&w).1;
+        if is_git { paths.retain(|p| !p.starts_with(':') && !(wild(p) && !p.contains('/'))); }
+        return paths.iter().all(|p| { let r = inside(p, base); mapped(r.as_deref(), true) || mapped_glob(r.as_deref()) });
+    }
     if read_set().contains(tool.as_str()) { return read_files(&w).1.iter().all(|f| mapped(inside(f, base).as_deref(), false)); }
     if tool == "ls" || tool == "tree" { return words[1..].iter().filter(|a| !a.starts_with('-')).all(|a| mapped(inside(a, base).as_deref(), true)); }
     tool == "find"
@@ -966,8 +1000,8 @@ fn filter_ok(words: &[String]) -> bool {
 
 /// What a pipeline's first command is, for the line to be rebuilt.
 enum ChainKind {
-    /// a read the map answers: its ask, and the steps of the pipeline it replaces
-    Read(String, usize),
+    /// a read the map answers: its ask, the steps left after it, and whether it is a find feeding xargs
+    Read(String, Vec<Step>, bool),
     /// a read that only counts
     Count,
     /// anything else
@@ -976,6 +1010,7 @@ enum ChainKind {
     Syntax,
 }
 
+// @map map.guard.commands.rewrite.build: a pipeline's first command as a read, and the line rebuilt with each read as its ask
 fn chain_read(chain: &[Step]) -> ChainKind {
     let first = &chain[0];
     let (words, base) = (&first.words, first.base.as_str());
@@ -986,17 +1021,21 @@ fn chain_read(chain: &[Step]) -> ChainKind {
         let root = words[1..].iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| ".".into());
         let mut w: Vec<String> = chain[1].words[1..].to_vec();
         w.extend(["-r".to_string(), root, format!("--include={}", pattern)]);
-        return match grep_question(&w, base).filter(|q| !q.is_empty()) { Some(q) => ChainKind::Read(format!("{}{}", g().ask, quote(&q)), 2), None => ChainKind::Step };
+        return match grep_question(&w, base, false).filter(|q| !q.is_empty()) { Some(q) => ChainKind::Read(format!("{}{}", g().ask, quote(&q)), chain[2..].to_vec(), true), None => ChainKind::Step };
     }
     let Some(q) = question(words, base).filter(|q| !q.is_empty()) else { return ChainKind::Step };
-    let mut run: Vec<&Vec<String>> = Vec::new();
+    let mut run: Vec<&Step> = Vec::new();
     for s in &chain[1..] {
         if s.words.is_empty() || !filter_set().contains(bn(&s.words[0])) { break; }
-        run.push(&s.words);
+        run.push(s);
     }
-    if counts(&run) { return ChainKind::Count; }
+    let run_words: Vec<Vec<String>> = run.iter().map(|s| s.words.clone()).collect();
+    if counts(&run_words.iter().collect::<Vec<_>>()) { return ChainKind::Count; }
+    let (fq, kept) = folded(words, base, &run_words);
+    let q = fq.unwrap_or(q);
     let own = if file_filter_flags(bn(&words[0])).is_some() { file_filter(words).map(|f| f.0) } else { None };
-    ChainKind::Read(format!("{}{}{}", g().ask, quote(&q), own.map(|o| format!(" | {}", quote(&o))).unwrap_or_default()), 1)
+    let left: Vec<Step> = kept.into_iter().map(|i| run[i].clone()).chain(chain[1 + run.len()..].iter().cloned()).collect();
+    ChainKind::Read(format!("{}{}{}", g().ask, quote(&q), own.map(|o| format!(" | {}", quote(&o))).unwrap_or_default()), left, false)
 }
 
 /// A step of the rebuilt line: as written, with its own text, or dropped (a cd whose separator passes on, a filter the ask took in).
@@ -1016,8 +1055,8 @@ fn rebuild(line: &str, cwd: &str, in_place: bool) -> Option<(String, bool, bool,
         let chain = &st[k..j];
         let first = &chain[0];
         let kind = chain_read(chain);
-        let used = if let ChainKind::Read(_, u) = &kind { *u } else { 1 };
-        for s in &chain[used..] {
+        let rest: Vec<Step> = if let ChainKind::Read(_, left, _) = &kind { left.clone() } else { chain[1..].to_vec() };
+        for s in &rest {
             ok = ok && !s.words.is_empty() && filter_ok(&s.words) && !s.redirected;
             pure = pure && !s.words.is_empty() && filter_set().contains(bn(&s.words[0]));
         }
@@ -1026,12 +1065,13 @@ fn rebuild(line: &str, cwd: &str, in_place: bool) -> Option<(String, bool, bool,
                 if first.kind == StepKind::Cd && in_place { out.push(Piece { step: first.clone(), drop: Some("transfer"), text: None }); }
                 else { out.push(Piece { step: first.clone(), drop: None, text: None }); }
             }
-            ChainKind::Read(ask, _) => {
+            ChainKind::Read(ask, _, xargs) => {
                 replaced = true;
-                ok = ok && used == 1 && whole(&first.words, &first.base);          // xargs could run anything
+                ok = ok && !*xargs && whole(&first.words, &first.base);          // xargs could run anything
                 let body = if in_place { ask.clone() } else { anchored(&first.base, ask) };
-                out.push(Piece { step: first.clone(), drop: None, text: Some(format!("{}{}{}{}", first.lead, first.prefix, body, first.trail)) });
-                if used == 2 { out.push(Piece { step: chain[1].clone(), drop: Some("own"), text: None }); }
+                let trail = first.trail.as_str();      // kept even when the pipe's stages were all dropped: tests and goldens expect `ask x || echo`, not `ask x|| echo`
+                out.push(Piece { step: first.clone(), drop: None, text: Some(format!("{}{}{}{}", first.lead, first.prefix, body, trail)) });
+                if *xargs { out.push(Piece { step: chain[1].clone(), drop: Some("own"), text: None }); }
             }
             _ => {
                 pure = false;
@@ -1045,7 +1085,7 @@ fn rebuild(line: &str, cwd: &str, in_place: bool) -> Option<(String, bool, bool,
                 out.push(Piece { step: first.clone(), drop: None, text: Some(text) });
             }
         }
-        for s in &chain[used..] { out.push(Piece { step: s.clone(), drop: None, text: None }); }
+        for s in &rest { out.push(Piece { step: s.clone(), drop: None, text: None }); }
         k = j;
     }
     let (mut text, mut carry) = (String::new(), None::<String>);
@@ -1074,22 +1114,352 @@ pub fn resend(line: &str, cwd: &str) -> Option<String> {
     let (text, replaced, _, pure) = rebuild(line, cwd, false)?;
     if replaced && !pure { Some(text) } else { None }
 }
+// @end map.guard.commands.rewrite.build
 // @end map.guard.commands.rewrite
+
+// @map map.guard.commands.powershell: a PowerShell line into its statements, and Select-String, Get-Content and Get-ChildItem (with their aliases) as the bash read each equals, so one rule answers both shells
+fn ps_alias(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "select-string" | "sls" => "select-string",
+        "get-content" | "gc" | "cat" | "type" => "get-content",
+        "get-childitem" | "gci" | "ls" | "dir" => "get-childitem",
+        _ => return None,
+    })
+}
+/// A cmdlet's parameters that take a value, and its switches (a prefix that names one only is read as it).
+fn ps_params(canon: &str) -> (&'static [&'static str], &'static [&'static str]) {
+    match canon {
+        "select-string" => (&["pattern", "path", "literalpath", "include", "exclude", "context", "encoding", "inputobject", "culture"],
+                            &["simplematch", "casesensitive", "notmatch", "allmatches", "list", "quiet", "raw", "noemphasis"]),
+        "get-content" => (&["path", "literalpath", "totalcount", "head", "first", "tail", "last", "readcount", "encoding", "delimiter", "filter", "include", "exclude", "stream"],
+                          &["raw", "wait", "force", "asbytestream"]),
+        _ => (&["path", "literalpath", "filter", "include", "exclude", "depth", "attributes"],
+              &["recurse", "r", "name", "force", "file", "directory", "hidden", "readonly", "system", "followsymlink", "ad", "af"]),
+    }
+}
+fn ps_cd_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("cd chdir set-location sl push-location pushd")) }
+fn ps_writes_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("set-content add-content out-file tee-object tee remove-item copy-item move-item new-item clear-content rename-item set-item sc ac ri rm del erase rd rmdir cp copy mv move ni rni patch")) }
+fn ps_identity_set() -> &'static HashSet<&'static str> { static T: OnceLock<HashSet<&'static str>> = OnceLock::new(); T.get_or_init(|| set("out-string out-host format-list format-table fl ft more")) }     // stages that only show what they are fed
+const PS_FILE_READ: &str = r#"(?i)\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadLines|OpenText)\(\s*(?:'(.+?)'|"(.+?)")"#;
+const PS_FILE_WRITE: &str = r"(?i)\[(?:System\.)?IO\.File\]::(?:Write|Append|Create|Open\b|Copy|Move|Delete|Replace)|\.Save\(|WriteAll";
+const QUIET_PS: &str = r"(?i)^(?:(?:\d|\*)?>&\d|(?:\d|\*)?>>?\$?(?:null|nul))$";       // stderr or all output thrown away
+
+/// A token of the PowerShell line: a word, or syntax (; | && || ( ) { } &).
+#[derive(Clone, PartialEq)]
+enum Tok { W(String), Op(String) }
+
+/// The basename of a PowerShell path (either separator on Windows).
+fn pbn(w: &str) -> &str { (if cfg!(windows) { w.rsplit(['/', '\\']).next() } else { w.rsplit('/').next() }).unwrap_or("") }
+
+/// A word quoted for PowerShell: as it is when it is safe, else in single quotes (a quote doubled).
+fn ps_quote_word(w: &str) -> String {
+    if rx(r"^[A-Za-z0-9_./:=+-]+$").is_match(w) { w.to_string() } else { format!("'{}'", w.replace('\'', "''")) }
+}
+fn ps_quote(words: &[String]) -> String { words.iter().map(|w| ps_quote_word(w)).collect::<Vec<_>>().join(" ") }
+
+/// The words of a PowerShell line, quotes resolved ('' inside '…', "" and the backtick inside "…", the backtick outside), the syntax as Op
+/// tokens (a newline is a `;`), a word starting with # a comment to the end of the line. A backslash is a letter.
+fn ps_tokens(line: &str) -> Vec<Tok> {
+    let r: Vec<char> = line.chars().collect();
+    let n = r.len();
+    let (mut out, mut word, mut had, mut i) = (Vec::new(), String::new(), false, 0usize);
+    while i < n {
+        let c = r[i];
+        if c == '\'' || c == '"' {
+            had = true;
+            i += 1;
+            while i < n {
+                if c == '"' && r[i] == '`' && i + 1 < n { word.push(r[i + 1]); i += 2; }
+                else if r[i] == c {
+                    if r.get(i + 1) != Some(&c) { break; }
+                    word.push(c);
+                    i += 2;
+                } else { word.push(r[i]); i += 1; }
+            }
+            i += 1;
+            continue;
+        }
+        if c == '`' && i + 1 < n {
+            if r[i + 1] != '\n' { word.push(r[i + 1]); had = true; }
+            i += 2;
+            continue;
+        }
+        let syntax = ";|(){}&".contains(c) && !(c == '&' && word.ends_with('>'));
+        if matches!(c, ' ' | '\t' | '\r' | '\n') || syntax || (c == '#' && !had) {
+            if had { out.push(Tok::W(std::mem::take(&mut word))); had = false; }
+            if c == '#' {
+                i = r[i..].iter().position(|&x| x == '\n').map(|p| p + i).unwrap_or(n);
+            } else if c == '\n' {
+                out.push(Tok::Op(";".into()));
+                i += 1;
+            } else if syntax {
+                let two: String = r[i..(i + 2).min(n)].iter().collect();
+                let op = if two == "&&" || two == "||" { two } else { c.to_string() };
+                i += op.chars().count();
+                out.push(Tok::Op(op));
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        word.push(c);
+        had = true;
+        i += 1;
+    }
+    if had { out.push(Tok::W(word)); }
+    out
+}
+
+/// ([statement], writes): each statement a list of pipeline stages, each stage a list of words (parentheses and braces are passed through,
+/// redirections to $null left out); writes: a redirection into a file, or a cmdlet or call that writes.
+fn ps_statements(line: &str) -> (Vec<Vec<Vec<String>>>, bool) {
+    let (mut statements, mut stages, mut words, mut writes_, mut skip) = (Vec::<Vec<Vec<String>>>::new(), Vec::<Vec<String>>::new(), Vec::<String>::new(), false, false);
+    let tokens = ps_tokens(line);
+    for (k, t) in tokens.iter().enumerate() {
+        if skip { skip = false; continue; }
+        match t {
+            Tok::Op(op) => {
+                if matches!(op.as_str(), "(" | ")" | "{" | "}") || (op == "&" && words.is_empty()) { continue; }       // a group, or the call operator
+                if !words.is_empty() { stages.push(std::mem::take(&mut words)); }
+                words = Vec::new();
+                if op != "|" {
+                    if !stages.is_empty() { statements.push(std::mem::take(&mut stages)); }
+                    stages = Vec::new();
+                }
+            }
+            Tok::W(t) => {
+                if rx(QUIET_PS).is_match(t) { continue; }
+                if rx(r"^(?:\d|\*)?>>?$").is_match(t) {                     // > target: the target is no word of the command
+                    let nxt = match tokens.get(k + 1) { Some(Tok::W(x)) => x.as_str(), _ => "" };
+                    writes_ = writes_ || !matches!(nxt.to_lowercase().as_str(), "$null" | "nul");
+                    skip = !nxt.is_empty();
+                } else if rx(r"^(?:\d|\*)?>>?[^&]").is_match(t) {
+                    writes_ = true;
+                } else {
+                    words.push(t.clone());
+                }
+            }
+        }
+    }
+    if !words.is_empty() { stages.push(words); }
+    if !stages.is_empty() { statements.push(stages); }
+    writes_ = writes_ || statements.iter().any(|stmt| stmt.iter().any(|st| ps_writes_set().contains(pbn(&st[0]).to_lowercase().as_str()))) || rx(PS_FILE_WRITE).is_match(line);
+    (statements, writes_)
+}
+
+/// A PowerShell path as the rest of the guard reads it: with `/`.
+fn ps_path(p: &str) -> String { p.replace('\\', "/") }
+
+/// A word of a posix command in a PowerShell line: a path with backslashes in `/` (a pattern with regex syntax stays as it is).
+fn ps_word(w: &str) -> String { if w.contains('\\') && !w.contains(['|', '(', ')', '+', '^', '$', '[', ']', '{', '}']) { ps_path(w) } else { w.to_string() } }
+
+fn ps_command(words: &[String]) -> Option<&'static str> { words.first().and_then(|w| ps_alias(&pbn(w).to_lowercase())) }
+
+/// A cmdlet's parameter: its value, or a switch.
+#[derive(Clone)]
+enum PsVal { Str(String), Flag }
+
+/// ({parameter: its value, or a switch}, [the words that are no parameter]) of a cmdlet's arguments.
+fn ps_args(canon: &str, words: &[String]) -> (HashMap<String, PsVal>, Vec<String>) {
+    let (valued, switches) = ps_params(canon);
+    let known: Vec<&str> = valued.iter().chain(switches.iter()).copied().collect();
+    let (mut named, mut pos, mut i) = (HashMap::new(), Vec::new(), 1usize);
+    while i < words.len() {
+        let m = rx(r"^-([A-Za-z]+)(?::(.*))?$").captures(&words[i]);
+        let key = m.as_ref().map(|c| c[1].to_lowercase());
+        let near: Vec<&str> = known.iter().copied().filter(|x| key.as_deref().map(|k| x.starts_with(k)).unwrap_or(false)).collect();
+        let full: Option<&str> = match &key {
+            Some(k) if known.contains(&k.as_str()) => known.iter().copied().find(|x| x == k),
+            _ if near.len() == 1 => Some(near[0]),
+            _ => None,
+        };
+        if let (Some(f), Some(m)) = (full.filter(|f| valued.contains(f)), m.as_ref()) {
+            match m.get(2) {
+                Some(v) => { named.insert(f.to_string(), PsVal::Str(v.as_str().to_string())); i += 1; }
+                None => { named.insert(f.to_string(), PsVal::Str(words.get(i + 1).cloned().unwrap_or_default())); i += 2; }
+            }
+        } else if m.is_some() {
+            if let Some(f) = full { named.insert(f.to_string(), PsVal::Flag); }
+            i += 1;
+        } else {
+            pos.push(words[i].clone());
+            i += 1;
+        }
+    }
+    (named, pos)
+}
+
+fn ps_list(value: Option<&str>) -> Vec<String> { value.map(|v| v.split(',').filter(|x| !x.is_empty()).map(ps_path).collect()).unwrap_or_default() }
+
+fn ps_str<'a>(named: &'a HashMap<String, PsVal>, k: &str) -> Option<&'a str> { match named.get(k) { Some(PsVal::Str(s)) => Some(s.as_str()), _ => None } }
+fn ps_flag(named: &HashMap<String, PsVal>, k: &str) -> bool { match named.get(k) { Some(PsVal::Str(s)) => !s.is_empty(), Some(PsVal::Flag) => true, None => false } }
+fn nonempty(s: Option<&str>) -> Option<&str> { s.filter(|x| !x.is_empty()) }
+
+// @map map.guard.commands.powershell.read: a PowerShell stage as the bash read it equals, the filters after it, the line's asks and the line run in its place
+/// The bash words that read what a PowerShell stage reads (Select-String as grep, Get-Content as cat, head or tail, Get-ChildItem as ls or
+/// find), a posix command's own words with their paths in `/`; None when it is no read.
+fn ps_bash(words: &[String]) -> Option<Vec<String>> {
+    let Some(canon) = ps_command(words) else {
+        return if rx(r"^[\w.-]+$").is_match(pbn(&words[0])) {
+            let mut out = vec![words[0].clone()];
+            out.extend(words[1..].iter().map(|w| ps_word(w)));
+            Some(out)
+        } else { None };
+    };
+    let (named, mut pos) = ps_args(canon, words);
+    let path = nonempty(ps_str(&named, "path")).or(ps_str(&named, "literalpath")).map(String::from);
+    if canon == "select-string" {
+        let mut pattern = ps_str(&named, "pattern").map(String::from);
+        if pattern.is_none() && !pos.is_empty() { pattern = Some(pos.remove(0)); }
+        let path = nonempty(path.as_deref()).map(String::from).or_else(|| pos.first().cloned());
+        let pattern = pattern?;
+        if ps_flag(&named, "quiet") { return None; }
+        let mut out = vec!["grep".to_string()];
+        if !ps_flag(&named, "casesensitive") { out.push("-i".into()); }
+        if ps_flag(&named, "simplematch") { out.push("-F".into()); }
+        if ps_flag(&named, "notmatch") { out.push("-v".into()); }
+        out.push("-e".into());
+        out.push(pattern);
+        out.extend(ps_list(ps_str(&named, "include")).into_iter().map(|g| format!("--include={}", g)));
+        out.extend(ps_list(path.as_deref()));
+        return Some(out);
+    }
+    if canon == "get-content" {
+        let files = ps_list(nonempty(path.as_deref()).or(pos.first().map(|s| s.as_str())));
+        let pick = |keys: &[&str]| keys.iter().find_map(|k| named.get(*k)).and_then(|v| if let PsVal::Str(s) = v { Some(s.clone()) } else { None });
+        for (tool, n) in [("head", pick(&["totalcount", "head", "first"])), ("tail", pick(&["tail", "last"]))] {
+            if let Some(n) = n.filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) {
+                let mut out = vec![tool.to_string(), "-n".into(), n];
+                out.extend(files);
+                return Some(out);
+            }
+        }
+        let mut out = vec!["cat".to_string()];
+        out.extend(files);
+        return Some(out);
+    }
+    let place = ps_list(nonempty(path.as_deref()).or(pos.first().map(|s| s.as_str()))).into_iter().next().unwrap_or_else(|| ".".into());
+    let glob = nonempty(ps_str(&named, "filter")).map(String::from).or_else(|| ps_list(ps_str(&named, "include")).into_iter().next());
+    if ps_flag(&named, "directory") || ps_flag(&named, "ad") { return None; }
+    if ps_flag(&named, "recurse") || ps_flag(&named, "r") || glob.is_some() {
+        let mut out = vec!["find".to_string(), place];
+        if let Some(g) = glob { out.push("-name".into()); out.push(g); }
+        Some(out)
+    } else {
+        Some(vec!["ls".to_string(), place])
+    }
+}
+
+/// A stage after the first as the bash filter it equals (Some(empty) when it only shows what it is fed); None when it is anything else.
+fn ps_filter(words: &[String]) -> Option<Vec<String>> {
+    let name = pbn(&words[0]).to_lowercase();
+    if ps_identity_set().contains(name.as_str()) { return Some(vec![]); }
+    if name == "measure-object" || name == "measure" { return Some(vec!["wc".into(), "-l".into()]); }
+    if name == "select-string" || name == "sls" { return ps_bash(words); }
+    if name == "select-object" || name == "select" {
+        let m = words.len() == 3 && rx(r"(?i)^-(first|last)$").is_match(&words[1]) && !words[2].is_empty() && words[2].chars().all(|c| c.is_ascii_digit());
+        return if m { Some(vec![(if words[1].to_lowercase() == "-first" { "head" } else { "tail" }).to_string(), "-n".into(), words[2].clone()]) } else { None };
+    }
+    ps_bash(words).filter(|b| !b.is_empty() && filter_set().contains(bn(&b[0])))
+}
+
+/// (question, exact) for a pipeline of PowerShell stages that reads the code or the docs; exact: nothing is left after the ask (a stage that
+/// is none of the equals above, or a filter the ask keeps, could not be run for it). None for a count or anything else.
+fn ps_read(stages: &[Vec<String>], base: &str) -> Option<(Vec<String>, bool)> {
+    if stages.iter().any(|st| st.iter().any(|w| rx(r"(?i)^\.(?:count|length)$").is_match(w))) { return None; }       // (Get-Content f).Count: a count
+    let first = ps_bash(&stages[0]).filter(|f| !f.is_empty())?;
+    let (mut filters, mut exact) = (Vec::<Vec<String>>::new(), true);
+    for st in &stages[1..] {
+        match ps_filter(st) {
+            None => { exact = false; break; }
+            Some(f) => { if !f.is_empty() { filters.push(f); } }
+        }
+    }
+    if (first[0] == "find" || first[0] == "ls") && !exact { return None; }          // a listing computed over: names, dates, sizes
+    if counts(&filters.iter().collect::<Vec<_>>()) { return None; }
+    if first[0] == "find" && !filters.is_empty() && filters[0][0] == "grep" && grep_parts(&filters[0]).1.is_empty() {      // Select-String reads the files Get-ChildItem lists
+        let pattern = first.iter().enumerate().find(|(j, a)| *a == "-name" && j + 1 < first.len()).map(|(j, _)| first[j + 1].clone()).unwrap_or_else(|| "*".into());
+        let mut w = filters[0].clone();
+        w.extend(["-r".to_string(), first[1].clone(), format!("--include={}", pattern)]);
+        let q = grep_question(&w, base, false).filter(|q| !q.is_empty())?;
+        return Some((q, exact && filters[1..].iter().all(|f| matches!(bn(&f[0]), "head" | "tail"))));
+    }
+    let (q, kept) = folded(&first, base, &filters);
+    q.map(|q| (q, exact && kept.is_empty()))
+}
+
+/// (asks, pure): each read of the code or the docs in a PowerShell line as the words of its ask, and whether the line is those reads only (a cd
+/// followed); None when the line writes.
+fn ps_plan(line: &str, cwd: &str) -> Option<(Vec<Vec<String>>, bool)> {
+    let (statements, writes_) = ps_statements(line);
+    if writes_ { return None; }
+    let (mut base, mut asks, mut pure) = (cwd.to_string(), Vec::<Vec<String>>::new(), true);
+    for stages in &statements {
+        let first = &stages[0];
+        if ps_cd_set().contains(pbn(&first[0]).to_lowercase().as_str()) && first.len() == 2 && stages.len() == 1 && !first[1].contains('$') {
+            base = Path::new(&base).join(expanduser(&ps_path(&first[1]))).to_string_lossy().to_string();
+            continue;
+        }
+        match ps_read(stages, &base) {
+            Some((q, exact)) => { asks.push(q); pure = pure && exact; }
+            None => pure = false,
+        }
+    }
+    for m in rx(PS_FILE_READ).captures_iter(line) {
+        let rel = inside(&ps_path(m.get(1).or_else(|| m.get(2)).unwrap().as_str()), cwd);
+        if mapped(rel.as_deref(), false) { asks.push(vec![rel.unwrap()]); pure = false; }
+    }
+    Some((asks, pure))
+}
+
+/// The ask replacing a PowerShell line, or None when it may go ahead.
+fn ps_question(line: &str, cwd: &str) -> Option<String> {
+    let plan = ps_plan(line, cwd)?;
+    if plan.0.is_empty() { return None; }
+    Some(format!("{}{}", g().ask, ps_quote(&plan.0.concat())))
+}
+
+/// The PowerShell line run in its place, each read as its ask, from the root; None when a step is more than a read.
+fn ps_rewrite(line: &str, cwd: &str) -> Option<String> {
+    let plan = ps_plan(line, cwd)?;
+    if plan.0.is_empty() || !plan.1 { return None; }
+    let text = plan.0.iter().map(|q| format!("{}{}", g().ask, ps_quote(q))).collect::<Vec<_>>().join("; ");
+    if realpath(Path::new(cwd)) == realpath(&g().root) { return Some(text); }
+    Some(format!("Push-Location -LiteralPath {}; try {{ {} }} finally {{ Pop-Location }}", ps_quote_word(&g().root.to_string_lossy().replace('\\', "/")), text))
+}
+// @end map.guard.commands.powershell.read
+// @end map.guard.commands.powershell
 
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
 // @map map.guard.decide.question: the map question of a command and of a whole shell line, with the filters and counts that go with it
+/// (grep's words, the folder) for `git [-C dir] [--no-pager] [-c k=v] grep …`, else None.
+fn git_grep(words: &[String], base: &str) -> Option<(Vec<String>, String)> {
+    let (mut i, mut base) = (1usize, base.to_string());
+    while i < words.len() && words[i].starts_with('-') {
+        if words[i] == "-C" && i + 1 < words.len() {
+            base = Path::new(&base).join(expanduser(&words[i + 1])).to_string_lossy().to_string();
+            i += 2;
+        } else if matches!(words[i].as_str(), "-c" | "--git-dir" | "--work-tree" | "--namespace") && i + 1 < words.len() { i += 2; }
+        else { i += 1; }
+    }
+    if words.get(i).map(|x| x == "grep").unwrap_or(false) {
+        let mut w = vec!["grep".to_string(), "-r".to_string()];
+        w.extend(words[i + 1..].iter().cloned());
+        Some((w, base))
+    } else { None }
+}
+
 fn question(words: &[String], base: &str) -> Option<Vec<String>> {
     let tool = words[0].rsplit('/').next().unwrap_or("").to_string();
-    if tool == "git" && words.get(1).map(|s| s == "grep").unwrap_or(false) {
-        let mut w = vec!["grep".to_string(), "-r".to_string()]; w.extend(words[2..].iter().cloned());
-        return grep_question(&w, base);
+    if tool == "git" {
+        if let Some((w, b)) = git_grep(words, base) { return grep_question(&w, &b, true); }
     }
     if tool == "xargs" && words.len() > 1 && search_set().contains(words[1].rsplit('/').next().unwrap_or("")) {
         let mut w: Vec<String> = words[1..].to_vec(); w.push("-r".into()); w.push(".".into());
-        return grep_question(&w, base);
+        return grep_question(&w, base, false);
     }
     let mut w = vec![tool.clone()]; w.extend(words[1..].iter().cloned());
-    if search_set().contains(tool.as_str()) { return grep_question(&w, base); }
+    if search_set().contains(tool.as_str()) { return grep_question(&w, base, false); }
     if read_set().contains(tool.as_str()) { return read_question(&w, base); }
     if list_set().contains(tool.as_str()) { return list_question(&w, base); }
     None
@@ -1101,6 +1471,27 @@ fn counts(pipe: &[&Vec<String>]) -> bool {
         let t = w[0].rsplit('/').next().unwrap_or("");
         t == "wc" || (matches!(t, "grep" | "egrep" | "fgrep") && { let f = grep_parts(w).3; f.contains("c") || f.contains("--count") })
     })
+}
+
+/// (the question, the indexes of the filters left) for a read and the filters its output feeds. `head` and `tail` are dropped: the ask's
+/// lines are its answer, and a cut of them leaves its header and none of the code. A `cat` that feeds a search is that search over its
+/// files (`cat f | grep x` becomes `grep x f`), one that feeds `head` or `tail` is the range of its files.
+fn folded(words: &[String], base: &str, run: &[Vec<String>]) -> (Option<Vec<String>>, Vec<usize>) {
+    let (mut start, mut q) = (0usize, None::<Vec<String>>);
+    if bn(&words[0]) == "cat" && !run.is_empty() {
+        let files = read_files(words).1;
+        let first = &run[0];
+        if !files.is_empty() && search_set().contains(bn(&first[0])) && grep_parts(first).1.is_empty() {
+            let mut w = first.clone(); w.extend(files);
+            q = question(&w, base).filter(|x| !x.is_empty());
+        } else if !files.is_empty() && matches!(bn(&first[0]), "head" | "tail") && read_files(first).1.is_empty() {
+            let mut w = first.clone(); w.extend(files);
+            q = read_question(&w, base).filter(|x| !x.is_empty());
+        }
+        if q.is_some() { start = 1; }
+    }
+    let q = q.or_else(|| question(words, base).filter(|x| !x.is_empty()));
+    (q, (start..run.len()).filter(|&i| !matches!(bn(&run[i][0]), "head" | "tail")).collect())
 }
 
 pub fn shell_question(line: &str, cwd: &str) -> Option<String> {
@@ -1118,16 +1509,21 @@ pub fn shell_question(line: &str, cwd: &str) -> Option<String> {
             let pattern = c.words.iter().enumerate().find(|(j, x)| (*x == "-name" || *x == "-iname") && j + 1 < c.words.len()).map(|(j, _)| c.words[j + 1].clone()).unwrap_or_else(|| "*".into());
             let root = c.words[1..].iter().find(|x| !x.starts_with('-')).cloned().unwrap_or_else(|| ".".into());
             let mut w: Vec<String> = a.words[1..].to_vec(); w.push("-r".into()); w.push(root); w.push(format!("--include={}", pattern));
-            grep_question(&w, &c.base)
+            grep_question(&w, &c.base, false)
         } else { question(&c.words, &c.base) };
         let Some(q) = q else { continue };
         if q.is_empty() { continue; }
-        let mut pipe: Vec<&Vec<String>> = Vec::new();
+        let xargs = c.words[0] == "find" && after.map(|a| a.piped && a.words.len() > 1 && a.words[0] == "xargs" && search_set().contains(a.words[1].rsplit('/').next().unwrap_or(""))).unwrap_or(false);
+        let mut pipe: Vec<Vec<String>> = Vec::new();
         for w in &parts[k + 1..] {
             if !w.piped || !filter_set().contains(w.words[0].rsplit('/').next().unwrap_or("")) { break; }
-            pipe.push(&w.words);
+            pipe.push(w.words.clone());
         }
-        if counts(&pipe) { continue; }                                        // a count: nothing of the files is read
+        if counts(&pipe.iter().collect::<Vec<_>>()) { continue; }             // a count: nothing of the files is read
+        let (q, pipe) = if xargs { (q, pipe) } else {
+            let (fq, kept) = folded(&c.words, &c.base, &pipe);
+            (fq.unwrap_or(q), kept.into_iter().map(|i| pipe[i].clone()).collect::<Vec<_>>())
+        };
         let own = if file_filter_flags(c.words[0].rsplit('/').next().unwrap_or("")).is_some() { file_filter(&c.words).map(|f| f.0) } else { None };      // cut -c1-9 file: the ask, then cut
         if own.is_some() || !pipe.is_empty() {
             let mut run: Vec<String> = own.iter().map(|o| quote(o)).collect();
@@ -1180,7 +1576,7 @@ fn normalise(agent: &str, data: &Map<String, Value>) -> (String, Map<String, Val
                 Some(Value::Object(m)) => m.clone(),
                 _ => Map::new(),
             };
-            let kind = match name.as_str() { "bash" | "powershell" => "shell", "view" => "read", "grep" => "grep", "glob" => "glob", _ => "" };
+            let kind = match name.as_str() { "bash" => "shell", "powershell" => "powershell", "view" => "read", "grep" => "grep", "glob" => "glob", _ => "" };
             (kind.into(), given, cwd)
         }
         "gemini" => {
@@ -1190,7 +1586,7 @@ fn normalise(agent: &str, data: &Map<String, Value>) -> (String, Map<String, Val
             (kind.into(), given, cwd)
         }
         _ => {
-            let kind = match s(data, "tool_name").as_str() { "Bash" => "shell", "Read" => "read", "Grep" => "grep", "Glob" => "glob", _ => "" };
+            let kind = match s(data, "tool_name").as_str() { "Bash" => "shell", "PowerShell" => "powershell", "Read" => "read", "Grep" => "grep", "Glob" => "glob", _ => "" };
             (kind.into(), obj("tool_input"), cwd)
         }
     }
@@ -1247,6 +1643,7 @@ pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
     let (kind, given, cwd) = normalise(agent, data);
     match kind.as_str() {
         "shell" => { let mut c = s(&given, "command"); if c.is_empty() { c = s(&given, "cmd"); } shell_question(&c, &cwd) }
+        "powershell" => { let mut c = s(&given, "command"); if c.is_empty() { c = s(&given, "cmd"); } ps_question(&c, &cwd) }
         "read" => {
             let mut p = s(&given, "file_path");
             if p.is_empty() { p = s(&given, "absolute_path"); }
@@ -1263,7 +1660,7 @@ pub fn replacement(agent: &str, data: &Map<String, Value>) -> Option<String> {
             words.push("-e".into()); words.push(s(&given, "pattern"));
             words.push(folder_of(&given));
             for k in ["glob", "include"] { let v = s(&given, k); if !v.is_empty() { words.push("--glob".into()); words.push(v); } }
-            grep_question(&words, &cwd).map(|q| format!("{}{}", g().ask, quote(&q)))
+            grep_question(&words, &cwd, false).map(|q| format!("{}{}", g().ask, quote(&q)))
         }
         "glob" => glob_question(&folder_of(&given), &s(&given, "pattern"), &cwd),
         "list" => {
@@ -1282,13 +1679,18 @@ pub fn detect(data: &Map<String, Value>) -> &'static str {
     "claude"
 }
 
+/// Whether the call comes from a subagent: Claude Code adds `agent_id` (and `agent_type`, also given to a session started with --agent) to
+/// the hook input of a subagent's tool calls.
+fn subagent(data: &Map<String, Value>) -> bool { truthy(data.get("agent_id")) || truthy(data.get("agentId")) }
+
 /// The hook's answer for this call, or None when it goes ahead: in Claude Code a shell line of reads only runs through the map in its
 /// place; any other read of the code or the docs is refused with its ask.
 pub fn decide(agent: &str, data: &Map<String, Value>) -> Option<Value> {
     let asked = replacement(agent, data)?;
     let (kind, given, cwd) = normalise(agent, data);
     let command = s(&given, "command");
-    let line = if agent == "claude" && kind == "shell" { rewrite(&command, &cwd) } else { None };
+    let runs = agent == "claude" && !(subagent(data) && !g().translate);       // a subagent is denied its read line, with the ask, to learn it
+    let line = if !runs { None } else if kind == "shell" { rewrite(&command, &cwd) } else if kind == "powershell" { ps_rewrite(&command, &cwd) } else { None };
     if let Some(line) = line {
         let mut updated = given.clone();
         updated.insert("command".into(), json!(line));
@@ -1338,7 +1740,7 @@ pub fn install(agent: &str) {
     // On Windows the commands name the guard without ".exe": Git Bash resolves it, and the same settings work when the repository opens on macOS.
     let cmd = if cfg!(windows) && me.to_ascii_lowercase().ends_with(".exe") { me[..me.len() - 4].to_string() } else { me.clone() };
     let (path, new) = match agent {
-        "claude" => (".claude/settings.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Grep|Glob", "hooks": [{"type": "command", "command": format!("\"$CLAUDE_PROJECT_DIR/{}\"", cmd)}]}]}})),
+        "claude" => (".claude/settings.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell|Read|Grep|Glob", "hooks": [{"type": "command", "command": format!("\"$CLAUDE_PROJECT_DIR/{}\"", cmd)}]}]}})),
         "codex" => (".codex/hooks.json", json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": format!("\"$(git rev-parse --show-toplevel)/{}\" --agent codex", cmd), "statusMessage": "map-guard"}]}]}})),
         "cursor" => (".cursor/hooks.json", json!({"version": 1, "hooks": {"beforeShellExecution": [{"command": format!("{} --agent cursor", cmd)}], "beforeReadFile": [{"command": format!("{} --agent cursor", cmd)}]}})),
         "copilot" => {

@@ -59,7 +59,7 @@ run the whole suite 19 times; replayed with the checks that reach each change in
 Instructions are context, and context fades: with the "Finding code" section in `AGENTS.md`, most sessions still
 put 75% to 96% of their reads through `grep`, `sed` and `cat`. The guard (`map-guard.py`) is a pre-tool hook
 that refuses those reads on the code and the docs and names the `ask` that answers the same question, with the
-agent's own filters kept (`| head -5`). Nothing else is refused: counting, editing (and the reads that check the
+agent's own filters kept (`| cut`, `| sort`; a `| head` would cut the ask's answer, so it is dropped). Nothing else is refused: counting, editing (and the reads that check the
 edit, in the same line), writing, tests, builds, other files, a range of lines before an edit. In Claude Code a
 line whose every step only reads (the reads, `git status`, `which`, `--version`, `echo`, counts, filters) is not
 refused but run through the map in its place, so a refusal costs no extra call; a line that also does something

@@ -37,7 +37,7 @@ its place: `"permissionDecision": "allow"` with `"updatedInput"` (the whole inpu
 replaces the entire input object") and `"additionalContext"` saying so. A line that also has a step that is not a read
 is never allowed (an allow skips Claude Code's permission prompt): it is denied with the whole line to send again in the
 reason, after `Run instead:`, each read as its ask and every other step as written; the other agents get that line too. Hooks of the
-settings files also run inside subagents, whose input carries `agent_id` and `agent_type`. Coach: a `PostToolUse` hook answers
+settings files also run inside subagents, whose input carries `agent_id` and `agent_type` (the guard reads `agent_id` as the marker: `guard.subagents` in `map.json` makes it deny, with the ask, the read lines it would run in the main session). The `PowerShell` tool is matched too (`Bash|PowerShell|Read|Grep|Glob`) and its reads are answered the same way. Coach: a `PostToolUse` hook answers
 `{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "…"}}`, a "string added to Claude's
 context alongside the tool result"; it counts each subagent's reads apart. Claude Code watches its settings files and applies an edit to the hooks in the
 running session; when one has not appeared after a few seconds, restarting the session reloads them. Sources:
@@ -45,7 +45,7 @@ running session; when one has not appeared after a few seconds, restarting the s
 
 ```json
 {"hooks": {
-  "PreToolUse": [{"matcher": "Bash|Read|Grep|Glob", "hooks": [
+  "PreToolUse": [{"matcher": "Bash|PowerShell|Read|Grep|Glob", "hooks": [
     {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/map-guard.py\""}]}],
   "PostToolUse": [{"matcher": "Bash|Edit|Write", "hooks": [
     {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/map-coach.py\""}]}]}}

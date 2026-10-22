@@ -148,6 +148,20 @@ repository's root, and tells the agent so. The steps that may stay are the map's
 them. A step that reads or writes outside the repository, or does more than read (`cargo`, `npm`, `git commit`, a
 script), makes the line mixed.
 
+Reads through the PowerShell tool (`tool_name: "PowerShell"`) are read the same way: `Select-String`/`sls`, `Get-Content`/`gc`/`cat`/`type`
+(`-TotalCount`, `-Head`, `-Tail`, `| Select-Object -First/-Last N`), `Get-ChildItem`/`gci`/`ls`/`dir` (`-Recurse`, `-Filter`, `-Include`, and
+`| Select-String`), with Windows paths in any form (`C:\repo\src\x.py`, `src\x.py`, `.\x`, `/`). The line runs in its place as
+PowerShell (`<command> ask …; <command> ask …`, inside `Push-Location … try { … } finally { Pop-Location }` when it was not at the root).
+Counts (`Measure-Object`, `.Count`, `-Quiet`), writes (`Set-Content`, `Out-File`, `>`, `-replace … | Set-Content`), files outside the
+repository and every other command go ahead.
+
+In a subagent (`agent_id` in the hook input) a line that would run in its place is refused instead, with the exact `ask` line to run
+(`guard.subagents` in `map.json`, `"deny"` by default; `"translate"` keeps the main session's behaviour: docs/CONFIG.md).
+
+`head` and `tail` after a read are not run on the ask: its lines are the answer, and a cut of them leaves its header and none of the
+code, so they are dropped (`grep -n x f | head -3` is `ask x --in f`); `cat f | head -5` is the range `f:1-5`, and `cat f | grep x` is
+the search `grep x f`. `git grep` is read as `grep -r` in all its forms (`-C dir`, `--no-pager`, `-- pathspec`, `':!excluded'`, `'*.rs'`).
+
 A mixed line is refused whole, never allowed (an allow would skip Claude Code's own permission prompt for its other
 steps), and the refusal gives the line to send again: "None of this command ran: send this line instead, its reads
 already through the map. Run instead:" and the line, each read as its ask, every other step exactly as written, with the
@@ -164,4 +178,4 @@ What the guard refuses, and what it lets through, in one table:
 | `ls`, `find`, `tree` on the code's folders | `ls` of the root, `find -newer`, anything on ignored or generated files |
 | `python3 -c`, `node -e`, a heredoc or a scratch script that opens a file only to print it | a script that computes over data (`.json`, `.yaml`) |
 | the agent's own file-reading tool on a whole file; its grep and glob tools | a range of lines (before an edit); images; files outside the repository |
-| | the map's own commands, tests, builds, pipes into `head`/`cut` (kept on the ask); `git status`, `which`, `--version` and the other read-only steps beside a read (the line runs in place) |
+| | the map's own commands, tests, builds, pipes into `cut`/`sort` (kept on the ask; `head`/`tail` are dropped); `git status`, `which`, `--version` and the other read-only steps beside a read (the line runs in place) |

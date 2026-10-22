@@ -72,6 +72,7 @@ except (OSError, ValueError):
     CFG = {}
 ASK = (CFG.get('command') or 'python3 tools/map.py') + ' ask '
 SKIPPED = list((CFG.get('guard') or {}).get('skip', [])) + list(CFG.get('ignore', []))
+SUBAGENTS = 'translate' if (CFG.get('guard') or {}).get('subagents') == 'translate' else 'deny'   # a subagent's read line: run in its place, or denied with its ask
 TEXT = set(('.js .mjs .cjs .jsx .ts .tsx .mts .cts .java .kt .kts .scala .groovy .go .rs .swift .c .h .cc .cpp .cxx .hpp .hh .cs '
             '.m .mm .php .dart .css .scss .less .proto .zig .d .v .py .pyi .rb .rake .sh .bash .zsh .fish .pl .pm .r .R .yml '
             '.yaml .toml .ps1 .ex .exs .nim .jl .cmake .tf .nix .cr .coffee .mk .html .htm .xml .vue .svelte .astro .xhtml '
@@ -363,6 +364,7 @@ def commands(line, cwd):
     return out
 
 
+# @map map.guard.commands.questions: the ask for each kind of read: grep and git grep, cat, sed, head and tail, ls and find
 def grep_parts(words):
     """(patterns, paths, includes, flags) of a grep-like search."""
     pats, paths, includes, flags, i, ended = [], [], [], set(), 1, False
@@ -395,16 +397,21 @@ def grep_parts(words):
     return pats, paths, includes, flags
 
 
-def grep_question(words, base):
-    """The ask for a grep-like search over the code or the docs, or None when it searches elsewhere."""
+def grep_question(words, base, git=False):
+    """The ask for a grep-like search over the code or the docs, or None when it searches elsewhere. git: `git grep`, whose
+    pathspecs with a wildcard and no `/` (`'*.rs'`) match at any depth (they are includes, as grep's --include) and whose
+    magic pathspecs (`:!tests`) are left out."""
     pats, paths, includes, flags = grep_parts(words)
+    if git:
+        includes += [p for p in paths if re.search(r'[*?[]', p) and '/' not in p and not p.startswith(':')]
+        paths = [p for p in paths if not p.startswith(':') and not (re.search(r'[*?[]', p) and '/' not in p)]
     if flags & {'c', 'q', 'l', 'L', '--count', '--quiet', '--silent', '--files-with-matches', '--files-without-match'}:
         return None                                              # a count, a yes or file names: nothing of the files is read
     recursive = words[0] in ('rg', 'ag', 'ack') or flags & {'r', 'R', '--recursive'}
     if not paths and not recursive:
         return None
     rels = [inside(p, base) for p in paths] if paths else [inside('.', base)]
-    if not any(mapped(r) for r in rels):
+    if not any(mapped(r) or mapped_glob(r) for r in rels):
         return None
     places = [r for r in rels if r and r != '.']
     if includes:
@@ -432,6 +439,16 @@ def grep_question(words, base):
     if 'i' in flags:
         rx = '(?i)' + rx
     return [rx] + (['--in', ','.join(places)] if places else [])
+
+
+def mapped_glob(rel):
+    """Whether a path with a wildcard in a folder of it (src/**/*.rs) names a place the map reads: the folder before the
+    first wildcard segment is one (mapped() answers for a wildcard in the last segment only)."""
+    if rel is None or not re.search(r'[*?[]', rel):
+        return False
+    parts = rel.split('/')
+    k = next(i for i, seg in enumerate(parts) if re.search(r'[*?[]', seg))
+    return k < len(parts) - 1 and (k == 0 or mapped('/'.join(parts[:k])))
 
 
 def file_filter(words):
@@ -526,6 +543,8 @@ def list_question(words, base):
     return [r for r in rels if mapped(r) and r != '.'] or None
 
 
+# @end map.guard.commands.questions
+
 # @map map.guard.commands.scripts: a script that opens a file of the code only to print it: python -c, node -e, a heredoc fed to them, a scratch script run by name
 READ_ARG = re.compile(r"""\b(?:open|readFileSync|readFile|read_text|read_bytes|Path)\s*\(\s*(?:['"`]([^'"`\n]+)['"`]|([A-Za-z_$][\w$]*)\s*[,)])""")
 NAMED_VAR = re.compile(r"""\b([A-Za-z_$][\w$]*)\s*=\s*['"`]([^'"`\n]+)['"`]""")
@@ -607,10 +626,24 @@ def script_question(line, cwd):
 # @end map.guard.commands.scripts
 
 
+def git_grep(words, base):
+    """(grep's words, the folder) for `git [-C dir] [--no-pager] [-c k=v] grep …`, else None."""
+    i = 1
+    while i < len(words) and words[i].startswith('-'):
+        if words[i] == '-C' and i + 1 < len(words):
+            base, i = os.path.join(base, expanduser(words[i + 1])), i + 2
+        elif words[i] in ('-c', '--git-dir', '--work-tree', '--namespace') and i + 1 < len(words):
+            i += 2
+        else:
+            i += 1
+    return (['grep', '-r'] + words[i + 1:], base) if words[i:i + 1] == ['grep'] else None
+
+
 def question(words, base):
     tool = os.path.basename(words[0])
-    if tool == 'git' and words[1:2] == ['grep']:
-        return grep_question(['grep', '-r'] + words[2:], base)
+    if tool == 'git' and git_grep(words, base):
+        found = git_grep(words, base)
+        return grep_question(found[0], found[1], git=True)
     if tool == 'xargs' and len(words) > 1 and os.path.basename(words[1]) in SEARCH:
         return grep_question(words[1:] + ['-r', '.'], base)
     if tool in SEARCH:
@@ -622,10 +655,27 @@ def question(words, base):
     return None
 
 
+# @map map.guard.commands.fold: the filters a read's output feeds: counts, head and tail dropped, cat folded into the search or range it feeds, and the whole shell line's ask
 def counts(pipe):
     """Whether a run of filters counts what it is fed: wc, or grep -c."""
     return any(os.path.basename(w[0]) == 'wc' or (os.path.basename(w[0]) in ('grep', 'egrep', 'fgrep')
                and grep_parts(w)[3] & {'c', '--count'}) for w in pipe)
+
+
+def folded(words, base, run):
+    """(the question, the filters left) for a read and the filters its output feeds. `head` and `tail` are dropped: the ask's
+    lines are its answer, and a cut of them leaves its header and none of the code. A `cat` that feeds a search is that search
+    over its files (`cat f | grep x` → `grep x f`), one that feeds `head` or `tail` is the range of its files."""
+    run, q = list(run), None
+    if os.path.basename(words[0]) == 'cat' and run:
+        files, first = read_files(words)[1], run[0]
+        if files and os.path.basename(first[0]) in SEARCH and not grep_parts(first)[1]:
+            q = question(first + files, base)
+        elif files and os.path.basename(first[0]) in ('head', 'tail') and not read_files(first)[1]:
+            q = read_question(first + files, base)
+        run = run[1:] if q else run
+    q = q or question(words, base)
+    return q, [w for w in run if os.path.basename(w[0]) not in ('head', 'tail')]
 
 
 def shell_question(line, cwd):
@@ -639,7 +689,8 @@ def shell_question(line, cwd):
         if piped or any(w in ('>', '>>', '&>') for w in words) or not words:
             continue
         after = parts[k + 1] if k + 1 < len(parts) else None
-        if words[0] == 'find' and after and after[1] and after[0][:1] == ['xargs'] and os.path.basename(after[0][1]) in SEARCH:
+        xargs = words[0] == 'find' and after and after[1] and after[0][:1] == ['xargs'] and len(after[0]) > 1 and os.path.basename(after[0][1]) in SEARCH
+        if xargs:
             pattern = next((words[j + 1] for j, a in enumerate(words) if a in ('-name', '-iname') and j + 1 < len(words)), '*')
             root = next((a for a in words[1:] if not a.startswith('-')), '.')
             q = grep_question(after[0][1:] + ['-r', root, '--include=' + pattern], base)
@@ -654,6 +705,8 @@ def shell_question(line, cwd):
             pipe.append(w)
         if counts(pipe):
             continue                                        # a count: nothing of the files is read
+        if not xargs:
+            q, pipe = folded(words, base, pipe)
         own = file_filter(words)[0] if os.path.basename(words[0]) in FILE_FILTERS else None      # cut -c1-9 file: the ask, then cut
         if own or pipe:
             filtered.append(ASK + quote(q) + ' | ' + ' | '.join(quote(w) for w in ([own] if own else []) + pipe))
@@ -661,6 +714,8 @@ def shell_question(line, cwd):
             asked += q
     return '; '.join(([ASK + quote(asked)] if asked else []) + filtered) or None
 
+
+# @end map.guard.commands.fold
 
 # @map map.guard.commands.rewrite: a line that edits a file, whose reads check the edit; a line of reads only, run through the map in its place
 SIMPLE_SED = re.compile(r'(?:\d+|\$)(?:,(?:\d+|\$))?p|\d+q')                       # sed -n 5,20p: a range of lines, nothing that runs or writes
@@ -699,10 +754,15 @@ def is_map(words):
 def whole(words, base):
     """Whether the map answers all a read names: no file or folder of it would be left out of its ask."""
     tool = os.path.basename(words[0])
-    if tool == 'git' and words[1:2] == ['grep']:
-        tool, words = 'grep', words[1:]
+    git = tool == 'git' and git_grep(words, base)
+    if git:
+        words, base = git
+        tool = 'grep'
     if tool in SEARCH:
-        return all(mapped(inside(p, base)) for p in grep_parts([tool] + words[1:])[1])
+        paths = grep_parts([tool] + words[1:])[1]
+        if git:
+            paths = [p for p in paths if not p.startswith(':') and not (re.search(r'[*?[]', p) and '/' not in p)]
+        return all(mapped(inside(p, base)) or mapped_glob(inside(p, base)) for p in paths)
     if tool in READ:
         return all(mapped(inside(f, base), folder_ok=False) for f in read_files([tool] + words[1:])[1])
     if tool in ('ls', 'tree'):
@@ -876,8 +936,8 @@ def filter_ok(words):
 
 
 def chain_read(chain):
-    """What a pipeline's first command is: ('read', ask, steps replaced) for a read the map answers, ('count',) for one that
-    only counts, ('step',) for anything else, ('syntax',) for a loop's keywords, an assignment or a cd."""
+    """What a pipeline's first command is: ('read', ask, the steps left after it, xargs) for a read the map answers, ('count',)
+    for one that only counts, ('step',) for anything else, ('syntax',) for a loop's keywords, an assignment or a cd."""
     first = chain[0]
     words, base = first['words'], first['base']
     if first['kind'] != 'cmd':
@@ -888,7 +948,7 @@ def chain_read(chain):
         pattern = next((words[j + 1] for j, a in enumerate(words) if a in ('-name', '-iname') and j + 1 < len(words)), '*')
         root = next((a for a in words[1:] if not a.startswith('-')), '.')
         q = grep_question(chain[1]['words'][1:] + ['-r', root, '--include=' + pattern], base)
-        return ('read', ASK + quote(q), 2) if q else ('step',)
+        return ('read', ASK + quote(q), chain[2:], True) if q else ('step',)
     q = question(words, base)
     if not q:
         return ('step',)
@@ -896,11 +956,13 @@ def chain_read(chain):
     for s in chain[1:]:
         if not s['words'] or os.path.basename(s['words'][0]) not in FILTERS:
             break
-        run.append(s['words'])
-    if counts(run):
+        run.append(s)
+    if counts([s['words'] for s in run]):
         return ('count',)
+    q, kept = folded(words, base, [s['words'] for s in run])
     own = file_filter(words)[0] if os.path.basename(words[0]) in FILE_FILTERS else None
-    return ('read', ASK + quote(q) + (' | ' + quote(own) if own else ''), 1)
+    left = [s for s in run if any(s['words'] is w for w in kept)] + chain[1 + len(run):]
+    return ('read', ASK + quote(q) + (' | ' + quote(own) if own else ''), left, False)
 
 
 def rebuild(line, cwd, in_place):
@@ -918,8 +980,8 @@ def rebuild(line, cwd, in_place):
             j += 1
         chain, first = st[k:j], st[k]
         kind = chain_read(chain)
-        used = kind[2] if kind[0] == 'read' else 1
-        for s in chain[used:]:
+        rest = kind[2] if kind[0] == 'read' else chain[1:]
+        for s in rest:
             ok = ok and bool(s['words']) and filter_ok(s['words']) and not s['redirected']
             pure = pure and bool(s['words']) and os.path.basename(s['words'][0]) in FILTERS
         if kind[0] == 'syntax':
@@ -929,10 +991,10 @@ def rebuild(line, cwd, in_place):
                 out.append(first)
         elif kind[0] == 'read':
             replaced = True
-            ok = ok and used == 1 and whole(first['words'], first['base'])          # xargs could run anything
+            ok = ok and not kind[3] and whole(first['words'], first['base'])          # xargs could run anything
             text = first['lead'] + first['prefix'] + (kind[1] if in_place else anchored(first['base'], kind[1])) + first['trail']
             out.append({**first, 'text': text})
-            if used == 2:
+            if kind[3]:
                 out.append({**chain[1], 'drop': 'own'})
         else:
             pure = False
@@ -942,7 +1004,7 @@ def rebuild(line, cwd, in_place):
             if in_place and os.path.realpath(first['base']) != os.path.realpath(ROOT):
                 text = first['lead'] + first['prefix'] + f'(cd {quote_word(first["base"])} && {first["core"].strip()})' + first['trail']
             out.append({**first, 'text': text})
-        out += [s for s in chain[used:]]
+        out += rest
         k = j
     pieces, carry = [], None
     for s in out:
@@ -974,6 +1036,290 @@ def resend(line, cwd):
     return built[0] if built and built[1] and not built[3] else None
 # @end map.guard.commands.rewrite
 # @end map.guard.commands
+
+
+# @map map.guard.commands.powershell: a PowerShell line into its statements, and Select-String, Get-Content and Get-ChildItem (with their aliases) as the bash read each equals, so one rule answers both shells
+PS_ALIAS = {'select-string': 'select-string', 'sls': 'select-string', 'get-content': 'get-content', 'gc': 'get-content', 'cat': 'get-content',
+            'type': 'get-content', 'get-childitem': 'get-childitem', 'gci': 'get-childitem', 'ls': 'get-childitem', 'dir': 'get-childitem'}
+PS_PARAMS = {   # a cmdlet's parameters that take a value, and its switches (a prefix that names one only is read as it)
+    'select-string': ({'pattern', 'path', 'literalpath', 'include', 'exclude', 'context', 'encoding', 'inputobject', 'culture'},
+                      {'simplematch', 'casesensitive', 'notmatch', 'allmatches', 'list', 'quiet', 'raw', 'noemphasis'}),
+    'get-content': ({'path', 'literalpath', 'totalcount', 'head', 'first', 'tail', 'last', 'readcount', 'encoding', 'delimiter', 'filter', 'include',
+                     'exclude', 'stream'}, {'raw', 'wait', 'force', 'asbytestream'}),
+    'get-childitem': ({'path', 'literalpath', 'filter', 'include', 'exclude', 'depth', 'attributes'},
+                      {'recurse', 'r', 'name', 'force', 'file', 'directory', 'hidden', 'readonly', 'system', 'followsymlink', 'ad', 'af'})}
+PS_CD = {'cd', 'chdir', 'set-location', 'sl', 'push-location', 'pushd'}
+PS_WRITES = {'set-content', 'add-content', 'out-file', 'tee-object', 'tee', 'remove-item', 'copy-item', 'move-item', 'new-item', 'clear-content',
+             'rename-item', 'set-item', 'sc', 'ac', 'ri', 'rm', 'del', 'erase', 'rd', 'rmdir', 'cp', 'copy', 'mv', 'move', 'ni', 'rni', 'patch'}
+PS_IDENTITY = {'out-string', 'out-host', 'format-list', 'format-table', 'fl', 'ft', 'more'}              # stages that only show what they are fed
+PS_FILE_READ = re.compile(r"""\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadLines|OpenText)\(\s*(['"])(.+?)\1""", re.I)
+PS_FILE_WRITE = re.compile(r'\[(?:System\.)?IO\.File\]::(?:Write|Append|Create|Open\b|Copy|Move|Delete|Replace)|\.Save\(|WriteAll', re.I)
+PS_SAFE = re.compile(r'^[A-Za-z0-9_./:=+-]+$')
+
+
+class Op(str):
+    """A token of the PowerShell line that is syntax: ; | && || ( ) { } &."""
+
+
+def ps_quote_word(w):
+    """A word quoted for PowerShell: as it is when it is safe, else in single quotes (a quote doubled)."""
+    return w if PS_SAFE.match(w) else "'" + w.replace("'", "''") + "'"
+
+
+def ps_quote(words):
+    return ' '.join(ps_quote_word(w) for w in words)
+
+
+def ps_tokens(line):
+    """The words of a PowerShell line, quotes resolved ('' inside '…', "" and the backtick inside "…", the backtick outside), the
+    syntax as Op tokens (a newline is a `;`), a word starting with # a comment to the end of the line. A backslash is a letter."""
+    out, word, had, i, n = [], [], False, 0, len(line)
+    while i < n:
+        c = line[i]
+        if c in '\'"':
+            had, i = True, i + 1
+            while i < n:
+                if c == '"' and line[i] == '`' and i + 1 < n:
+                    word.append(line[i + 1])
+                    i += 2
+                elif line[i] == c:
+                    if line[i + 1:i + 2] != c:
+                        break
+                    word.append(c)
+                    i += 2
+                else:
+                    word.append(line[i])
+                    i += 1
+            i += 1
+            continue
+        if c == '`' and i + 1 < n:
+            if line[i + 1] != '\n':
+                word.append(line[i + 1])
+                had = True
+            i += 2
+            continue
+        if c in ' \t\r\n' or (c in ';|(){}&' and not (c == '&' and word and word[-1] == '>')) or (c == '#' and not had):
+            if had:
+                out.append(''.join(word))
+                word, had = [], False
+            if c == '#':
+                i = line.find('\n', i)
+                i = n if i < 0 else i
+            elif c == '\n':
+                out.append(Op(';'))
+                i += 1
+            elif c in ';|(){}&':
+                op = line[i:i + 2] if line[i:i + 2] in ('&&', '||') else c
+                out.append(Op(op))
+                i += len(op)
+            else:
+                i += 1
+            continue
+        word.append(c)
+        had = True
+        i += 1
+    if had:
+        out.append(''.join(word))
+    return out
+
+
+QUIET_PS = re.compile(r'(?:\d|\*)?>&\d|(?:\d|\*)?>>?\$?(?:null|nul)', re.I)       # stderr or all output thrown away
+
+
+def ps_statements(line):
+    """([statement], writes): each statement a list of pipeline stages, each stage a list of words (parentheses and braces are passed
+    through, redirections to $null left out); writes: a redirection into a file, or a cmdlet or call that writes."""
+    statements, stages, words, writes_, skip = [], [], [], False, False
+    tokens = ps_tokens(line)
+    for k, t in enumerate(tokens):
+        if skip:
+            skip = False
+        elif isinstance(t, Op):
+            if t in ('(', ')', '{', '}') or (t == '&' and not words):
+                continue                                                  # a group, or the call operator
+            if words:
+                stages.append(words)
+            words = []
+            if t != '|':
+                if stages:
+                    statements.append(stages)
+                stages = []
+        elif QUIET_PS.fullmatch(t):
+            continue
+        elif re.fullmatch(r'(?:\d|\*)?>>?', t):                           # > target: the target is no word of the command
+            nxt = tokens[k + 1] if k + 1 < len(tokens) and not isinstance(tokens[k + 1], Op) else ''
+            writes_ = writes_ or nxt.lower() not in ('$null', 'nul')
+            skip = bool(nxt)
+        elif re.match(r'(?:\d|\*)?>>?[^&]', t):
+            writes_ = True
+        else:
+            words.append(t)
+    if words:
+        stages.append(words)
+    if stages:
+        statements.append(stages)
+    writes_ = writes_ or any(os.path.basename(st[0]).lower() in PS_WRITES for stmt in statements for st in stmt) or bool(PS_FILE_WRITE.search(line))
+    return statements, writes_
+
+
+def ps_path(p):
+    """A PowerShell path as the rest of the guard reads it: with `/`."""
+    return p.replace('\\', '/')
+
+
+def ps_word(w):
+    """A word of a posix command in a PowerShell line: a path with backslashes in `/` (a pattern with regex syntax stays as it is)."""
+    return ps_path(w) if '\\' in w and not re.search(r'[|()+^$\[\]{}]', w) else w
+
+
+def ps_command(words):
+    return PS_ALIAS.get(os.path.basename(words[0]).lower()) if words else None
+
+
+def ps_args(canon, words):
+    """({parameter: its value, or True for a switch}, [the words that are no parameter]) of a cmdlet's arguments."""
+    valued, switches = PS_PARAMS[canon]
+    known = valued | switches
+    named, pos, i = {}, [], 1
+    while i < len(words):
+        m = re.fullmatch(r'-([A-Za-z]+)(?::(.*))?', words[i])
+        key = m.group(1).lower() if m else None
+        near = [x for x in known if key and x.startswith(key)]
+        full = key if key in known else near[0] if len(near) == 1 else None
+        if full in valued:
+            named[full] = m.group(2) if m.group(2) is not None else (words[i + 1] if i + 1 < len(words) else '')
+            i += 1 if m.group(2) is not None else 2
+        elif m:
+            if full:
+                named[full] = True
+            i += 1
+        else:
+            pos.append(words[i])
+            i += 1
+    return named, pos
+
+
+def ps_list(value):
+    return [ps_path(v) for v in value.split(',') if v] if isinstance(value, str) else []
+
+
+def ps_bash(words):
+    """The bash words that read what a PowerShell stage reads (Select-String as grep, Get-Content as cat, head or tail,
+    Get-ChildItem as ls or find), a posix command's own words with their paths in `/`; None when it is no read."""
+    canon = ps_command(words)
+    if canon is None:
+        return [words[0]] + [ps_word(w) for w in words[1:]] if re.fullmatch(r'[\w.-]+', os.path.basename(words[0])) else None
+    named, pos = ps_args(canon, words)
+    path = named.get('path') or named.get('literalpath')
+    if canon == 'select-string':
+        pattern = named.get('pattern')
+        if pattern is None and pos:
+            pattern = pos.pop(0)
+        path = path or (pos[0] if pos else None)
+        if pattern is None or named.get('quiet'):
+            return None
+        return (['grep'] + ([] if named.get('casesensitive') else ['-i']) + (['-F'] if named.get('simplematch') else []) + (['-v'] if named.get('notmatch') else [])
+                + ['-e', pattern] + ['--include=' + g for g in ps_list(named.get('include'))] + ps_list(path))
+    if canon == 'get-content':
+        files = ps_list(path or (pos[0] if pos else None))
+        head = next((named[k] for k in ('totalcount', 'head', 'first') if k in named), None)
+        tail = next((named[k] for k in ('tail', 'last') if k in named), None)
+        for tool, n in (('head', head), ('tail', tail)):
+            if isinstance(n, str) and n.isdigit():
+                return [tool, '-n', n] + files
+        return ['cat'] + files
+    place = (ps_list(path or (pos[0] if pos else None)) or ['.'])[0]
+    glob_ = named.get('filter') or next(iter(ps_list(named.get('include'))), None)
+    if named.get('directory') or named.get('ad'):
+        return None
+    return ['find', place] + (['-name', glob_] if glob_ else []) if named.get('recurse') or named.get('r') or glob_ else ['ls', place]
+
+
+def ps_filter(words):
+    """A stage after the first as the bash filter it equals ([] when it only shows what it is fed); None when it is anything else."""
+    name = os.path.basename(words[0]).lower()
+    if name in PS_IDENTITY:
+        return []
+    if name in ('measure-object', 'measure'):
+        return ['wc', '-l']
+    if name in ('select-string', 'sls'):
+        return ps_bash(words)
+    if name in ('select-object', 'select'):
+        m = len(words) == 3 and re.fullmatch(r'-(first|last)', words[1], re.I) and words[2].isdigit()
+        return (['head' if words[1].lower() == '-first' else 'tail', '-n', words[2]]) if m else None
+    bash = ps_bash(words)
+    return bash if bash and os.path.basename(bash[0]) in FILTERS else None
+
+
+def ps_read(stages, base):
+    """(question, exact) for a pipeline of PowerShell stages that reads the code or the docs; exact: nothing is left after the ask
+    (a stage that is none of the equals above, or a filter the ask keeps, could not be run for it). None for a count or anything else."""
+    if any(re.fullmatch(r'\.(?:count|length)', w, re.I) for st in stages for w in st):
+        return None                                                       # (Get-Content f).Count: a count
+    first = ps_bash(stages[0])
+    if not first:
+        return None
+    filters, exact = [], True
+    for st in stages[1:]:
+        f = ps_filter(st)
+        if f is None:
+            exact = False
+            break
+        filters += [f] if f else []
+    if first[0] in ('find', 'ls') and not exact:
+        return None                                                       # a listing computed over: names, dates, sizes
+    if counts(filters):
+        return None
+    if first[0] == 'find' and filters and filters[0][0] == 'grep' and not grep_parts(filters[0])[1]:      # Select-String reads the files Get-ChildItem lists
+        pattern = next((first[j + 1] for j, a in enumerate(first) if a == '-name' and j + 1 < len(first)), '*')
+        q = grep_question(filters[0] + ['-r', first[1], '--include=' + pattern], base)
+        return (q, exact and all(os.path.basename(f[0]) in ('head', 'tail') for f in filters[1:])) if q else None
+    q, kept = folded(first, base, filters)
+    return (q, exact and not kept) if q else None
+
+
+def ps_plan(line, cwd):
+    """(asks, pure): each read of the code or the docs in a PowerShell line as the words of its ask, and whether the line is
+    those reads only (a cd followed); None when the line writes."""
+    statements, writes_ = ps_statements(line)
+    if writes_:
+        return None
+    base, asks, pure = cwd, [], True
+    for stages in statements:
+        first = stages[0]
+        if os.path.basename(first[0]).lower() in PS_CD and len(first) == 2 and len(stages) == 1 and '$' not in first[1]:
+            base = os.path.join(base, expanduser(ps_path(first[1])))
+            continue
+        found = ps_read(stages, base)
+        if found:
+            asks.append(found[0])
+            pure = pure and found[1]
+        else:
+            pure = False
+    for m in PS_FILE_READ.finditer(line):
+        rel = inside(ps_path(m.group(2)), cwd)
+        if mapped(rel, folder_ok=False):
+            asks.append([rel])
+            pure = False
+    return asks, pure
+
+
+def ps_question(line, cwd):
+    """The ask replacing a PowerShell line, or None when it may go ahead."""
+    plan = ps_plan(line, cwd)
+    return plan and plan[0] and ASK + ps_quote(sum(plan[0], [])) or None
+
+
+def ps_rewrite(line, cwd):
+    """The PowerShell line run in its place, each read as its ask, from the root; None when a step is more than a read."""
+    plan = ps_plan(line, cwd)
+    if not plan or not plan[0] or not plan[1]:
+        return None
+    text = '; '.join(ASK + ps_quote(q) for q in plan[0])
+    if os.path.realpath(cwd) == os.path.realpath(ROOT):
+        return text
+    return f"Push-Location -LiteralPath {ps_quote_word(ROOT.replace(chr(92), '/'))}; try {{ {text} }} finally {{ Pop-Location }}"
+# @end map.guard.commands.powershell
 
 
 # @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
@@ -1048,7 +1394,7 @@ def normalise(agent, data):
             except ValueError:
                 given = {'command': given}
         given = given or {}
-        kind = {'bash': 'shell', 'powershell': 'shell', 'view': 'read', 'grep': 'grep', 'glob': 'glob'}.get(name)
+        kind = {'bash': 'shell', 'powershell': 'powershell', 'view': 'read', 'grep': 'grep', 'glob': 'glob'}.get(name)
         return kind, given, cwd
     if agent == 'gemini':
         name, given = str(data.get('tool_name', '')).lower(), data.get('tool_input') or {}
@@ -1056,7 +1402,7 @@ def normalise(agent, data):
                 else 'glob' if name == 'glob' else 'list' if name == 'list_directory' else None)
         return kind, given, cwd
     name, given = data.get('tool_name', ''), data.get('tool_input') or {}          # claude, codex
-    kind = {'Bash': 'shell', 'Read': 'read', 'Grep': 'grep', 'Glob': 'glob'}.get(name)
+    kind = {'Bash': 'shell', 'PowerShell': 'powershell', 'Read': 'read', 'Grep': 'grep', 'Glob': 'glob'}.get(name)
     return kind, given, cwd
 
 
@@ -1067,6 +1413,8 @@ def replacement(agent, data):
         return None
     if kind == 'shell':
         return shell_question(given.get('command') or given.get('cmd') or '', cwd)
+    if kind == 'powershell':
+        return ps_question(given.get('command') or given.get('cmd') or '', cwd)
     if kind == 'read':                                      # a range is offset and limit, or Gemini's start_line and end_line
         paths = given.get('paths')
         path = given.get('file_path') or given.get('absolute_path') or given.get('path') or (paths[0] if isinstance(paths, list) and paths else '')
@@ -1097,6 +1445,12 @@ def detect(data):
     return 'claude'
 
 
+def subagent(data):
+    """Whether the call comes from a subagent: Claude Code adds `agent_id` (and `agent_type`, also given to a session started with
+    --agent) to the hook input of a subagent's tool calls."""
+    return bool(data.get('agent_id') or data.get('agentId'))
+
+
 def decide(agent, data):
     """The hook's answer for this call, or None when it goes ahead: in Claude Code a shell line of reads only runs
     through the map in its place; any other read of the code or the docs is refused with its ask."""
@@ -1105,7 +1459,8 @@ def decide(agent, data):
         return None
     kind, given, cwd = normalise(agent, data)
     command = given.get('command') or ''
-    line = rewrite(command, cwd) if agent == 'claude' and kind == 'shell' else None
+    runs = agent == 'claude' and not (subagent(data) and SUBAGENTS == 'deny')       # a subagent is denied its read line, with the ask, to learn it
+    line = (rewrite(command, cwd) if kind == 'shell' else ps_rewrite(command, cwd) if kind == 'powershell' else None) if runs else None
     if line:
         return {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'allow',
                                        'permissionDecisionReason': 'map-guard: read through the map',
@@ -1126,7 +1481,7 @@ def answer(agent, asked, again=None):
 
 
 SETTINGS = {
-    'claude': ('.claude/settings.json', lambda me: {'hooks': {'PreToolUse': [{'matcher': 'Bash|Read|Grep|Glob', 'hooks': [
+    'claude': ('.claude/settings.json', lambda me: {'hooks': {'PreToolUse': [{'matcher': 'Bash|PowerShell|Read|Grep|Glob', 'hooks': [
         {'type': 'command', 'command': f'python3 "$CLAUDE_PROJECT_DIR/{me}"'}]}]}}),
     'codex': ('.codex/hooks.json', lambda me: {'hooks': {'PreToolUse': [{'matcher': 'Bash', 'hooks': [
         {'type': 'command', 'command': f'python3 "$(git rev-parse --show-toplevel)/{me}" --agent codex', 'statusMessage': 'map-guard'}]}]}}),

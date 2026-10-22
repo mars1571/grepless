@@ -30,6 +30,7 @@ const ROOT = findRoot();
 let CFG = {};
 try { CFG = JSON.parse(fs.readFileSync(path.join(ROOT, 'map.json'), 'utf8')); } catch { CFG = {}; }
 const ASK = (CFG.command || 'python3 tools/map.py') + ' ask ';
+const SUBAGENTS = (CFG.guard || {}).subagents === 'translate' ? 'translate' : 'deny';   // a subagent's read line: run in its place, or denied with its ask
 const SKIPPED = [...((CFG.guard || {}).skip || []), ...(CFG.ignore || [])];
 const TEXT = new Set([...('.js .mjs .cjs .jsx .ts .tsx .mts .cts .java .kt .kts .scala .groovy .go .rs .swift .c .h .cc .cpp .cxx .hpp .hh .cs .m .mm .php .dart '
   + '.css .scss .less .proto .zig .d .v .py .pyi .rb .rake .sh .bash .zsh .fish .pl .pm .r .R .yml .yaml .toml .ps1 .ex .exs .nim .jl .cmake .tf .nix .cr '
@@ -244,13 +245,20 @@ function grepParts(words) {
   if (!pats.length && paths.length) { pats_ = [paths[0]]; paths_ = paths.slice(1); }
   return [pats_, paths_, includes, flags];
 }
-function grepQuestion(words, base) {
-  const [pats_, paths_, includes, flags] = grepParts(words);
+const WILD = /[*?[]/;
+// The ask for a grep-like search over the code or the docs, or null when it searches elsewhere. git: `git grep`, whose pathspecs with a
+// wildcard and no `/` ('*.rs') match at any depth (they are includes, as grep's --include) and whose magic pathspecs (:!tests) are left out.
+function grepQuestion(words, base, git = false) {
+  let [pats_, paths_, includes, flags] = grepParts(words);
+  if (git) {
+    includes = [...includes, ...paths_.filter(p => WILD.test(p) && !p.includes('/') && !p.startsWith(':'))];
+    paths_ = paths_.filter(p => !p.startsWith(':') && !(WILD.test(p) && !p.includes('/')));
+  }
   if (['c', 'q', 'l', 'L', '--count', '--quiet', '--silent', '--files-with-matches', '--files-without-match'].some(f => flags.has(f))) return null;
   const recursive = ['rg', 'ag', 'ack'].includes(words[0]) || ['r', 'R', '--recursive'].some(f => flags.has(f));
   if (!paths_.length && !recursive) return null;
   const rels = paths_.length ? paths_.map(p => inside(p, base)) : [inside('.', base)];
-  if (!rels.some(r => mapped(r))) return null;
+  if (!rels.some(r => mapped(r) || mappedGlob(r))) return null;
   let places = rels.filter(r => r && r !== '.');
   if (includes.length) places = (places.length ? places : ['']).flatMap(p => includes.map(g => path.posix.join(p, '*' + g.replace(/^\*+/, '')))).map(p => p.replace(/^\/+/, ''));
   const pattern = pats_.join('|');
@@ -267,6 +275,13 @@ function grepQuestion(words, base) {
   if (flags.has('w')) rx = `\\b(?:${rx})\\b`;
   if (flags.has('i')) rx = '(?i)' + rx;
   return [rx, ...(places.length ? ['--in', places.join(',')] : [])];
+}
+// Whether a path with a wildcard in a folder of it (src/**/*.rs) names a place the map reads: the folder before the first wildcard
+// segment is one (mapped() answers for a wildcard in the last segment only).
+function mappedGlob(rel) {
+  if (rel === null || rel === undefined || !WILD.test(rel)) return false;
+  const parts = rel.split('/'), k = parts.findIndex(seg => WILD.test(seg));
+  return k < parts.length - 1 && (k === 0 || mapped(parts.slice(0, k).join('/')));
 }
 function fileFilter(words) {
   const tool = path.basename(words[0]), keep = [words[0]], files = []; let skip = false;
@@ -409,8 +424,13 @@ function isMap(words) {
 }
 function whole(words, base) {
   let tool = path.basename(words[0]);
-  if (tool === 'git' && words[1] === 'grep') { tool = 'grep'; words = words.slice(1); }
-  if (SEARCH.has(tool)) return grepParts([tool, ...words.slice(1)])[1].every(p => mapped(inside(p, base)));
+  const git = tool === 'git' ? gitGrep(words, base) : null;
+  if (git) { [words, base] = git; tool = 'grep'; }
+  if (SEARCH.has(tool)) {
+    let paths = grepParts([tool, ...words.slice(1)])[1];
+    if (git) paths = paths.filter(p => !p.startsWith(':') && !(WILD.test(p) && !p.includes('/')));
+    return paths.every(p => mapped(inside(p, base)) || mappedGlob(inside(p, base)));
+  }
   if (READ.has(tool)) return readFiles([tool, ...words.slice(1)])[1].every(f => mapped(inside(f, base), false));
   if (tool === 'ls' || tool === 'tree') return words.slice(1).filter(a => !a.startsWith('-')).every(a => mapped(inside(a, base)));
   return tool === 'find';
@@ -531,15 +551,17 @@ function chainRead(chain) {
     let pattern = '*'; for (let j = 0; j < words.length; j++) if ((words[j] === '-name' || words[j] === '-iname') && j + 1 < words.length) { pattern = words[j + 1]; break; }
     const root = words.slice(1).find(a => !a.startsWith('-')) || '.';
     const q = grepQuestion([...chain[1].words.slice(1), '-r', root, '--include=' + pattern], base);
-    return q ? ['read', ASK + quote(q), 2] : ['step'];
+    return q ? ['read', ASK + quote(q), chain.slice(2), true] : ['step'];
   }
   const q = question(words, base);
   if (!q) return ['step'];
   const run = [];
-  for (const s of chain.slice(1)) { if (!s.words.length || !FILTERS.has(path.basename(s.words[0]))) break; run.push(s.words); }
-  if (counts(run)) return ['count'];
+  for (const s of chain.slice(1)) { if (!s.words.length || !FILTERS.has(path.basename(s.words[0]))) break; run.push(s); }
+  if (counts(run.map(s => s.words))) return ['count'];
+  const [q2, kept] = folded(words, base, run.map(s => s.words));
   const own = path.basename(words[0]) in FILE_FILTERS ? fileFilter(words)[0] : null;
-  return ['read', ASK + quote(q) + (own ? ' | ' + quote(own) : ''), 1];
+  const left = [...run.filter(s => kept.includes(s.words)), ...chain.slice(1 + run.length)];
+  return ['read', ASK + quote(q2) + (own ? ' | ' + quote(own) : ''), left, false];
 }
 function rebuild(line, cwd, inPlace) {
   const st = steps(line, cwd);
@@ -550,18 +572,19 @@ function rebuild(line, cwd, inPlace) {
     while (j < st.length && st[j].piped) j++;
     const chain = st.slice(k, j), first = st[k];
     const kind = chainRead(chain);
-    const used = kind[0] === 'read' ? kind[2] : 1;
-    for (const s of chain.slice(used)) {
+    const rest = kind[0] === 'read' ? kind[2] : chain.slice(1);
+    for (const s of rest) {
       ok = ok && s.words.length > 0 && filterOk(s.words) && !s.redirected;
       pure = pure && s.words.length > 0 && FILTERS.has(path.basename(s.words[0]));
     }
     if (kind[0] === 'syntax') out.push(first.kind === 'cd' && inPlace ? { ...first, drop: 'transfer' } : first);
     else if (kind[0] === 'read') {
       replaced = true;
-      ok = ok && used === 1 && whole(first.words, first.base);                     // xargs could run anything
-      const text = first.lead + first.prefix + (inPlace ? kind[1] : anchored(first.base, kind[1])) + first.trail;
+      ok = ok && !kind[3] && whole(first.words, first.base);                     // xargs could run anything
+      const trail = first.trail;
+      const text = first.lead + first.prefix + (inPlace ? kind[1] : anchored(first.base, kind[1])) + trail;
       out.push({ ...first, text });
-      if (used === 2) out.push({ ...chain[1], drop: 'own' });
+      if (kind[3]) out.push({ ...chain[1], drop: 'own' });
     } else {
       pure = false;
       const words = first.words;
@@ -570,7 +593,7 @@ function rebuild(line, cwd, inPlace) {
       if (inPlace && !same_(first.base, ROOT)) text = first.lead + first.prefix + `(cd ${quoteWord(first.base)} && ${first.core.trim()})` + first.trail;
       out.push({ ...first, text });
     }
-    out.push(...chain.slice(used));
+    out.push(...rest);
     k = j;
   }
   const pieces = []; let carry = null;
@@ -594,10 +617,228 @@ function resend(line, cwd) {
 }
 // @end map.guard.commands.rewrite
 
+// @map map.guard.commands.powershell: a PowerShell line into its statements, and Select-String, Get-Content and Get-ChildItem (with their aliases) as the bash read each equals, so one rule answers both shells
+const PS_ALIAS = new Map(Object.entries({ 'select-string': 'select-string', sls: 'select-string', 'get-content': 'get-content', gc: 'get-content', cat: 'get-content',
+  type: 'get-content', 'get-childitem': 'get-childitem', gci: 'get-childitem', ls: 'get-childitem', dir: 'get-childitem' }));
+const PS_PARAMS = {   // a cmdlet's parameters that take a value, and its switches (a prefix that names one only is read as it)
+  'select-string': [new Set(['pattern', 'path', 'literalpath', 'include', 'exclude', 'context', 'encoding', 'inputobject', 'culture']),
+    new Set(['simplematch', 'casesensitive', 'notmatch', 'allmatches', 'list', 'quiet', 'raw', 'noemphasis'])],
+  'get-content': [new Set(['path', 'literalpath', 'totalcount', 'head', 'first', 'tail', 'last', 'readcount', 'encoding', 'delimiter', 'filter', 'include',
+    'exclude', 'stream']), new Set(['raw', 'wait', 'force', 'asbytestream'])],
+  'get-childitem': [new Set(['path', 'literalpath', 'filter', 'include', 'exclude', 'depth', 'attributes']),
+    new Set(['recurse', 'r', 'name', 'force', 'file', 'directory', 'hidden', 'readonly', 'system', 'followsymlink', 'ad', 'af'])],
+};
+const PS_CD = new Set(['cd', 'chdir', 'set-location', 'sl', 'push-location', 'pushd']);
+const PS_WRITES = new Set(['set-content', 'add-content', 'out-file', 'tee-object', 'tee', 'remove-item', 'copy-item', 'move-item', 'new-item', 'clear-content',
+  'rename-item', 'set-item', 'sc', 'ac', 'ri', 'rm', 'del', 'erase', 'rd', 'rmdir', 'cp', 'copy', 'mv', 'move', 'ni', 'rni', 'patch']);
+const PS_IDENTITY = new Set(['out-string', 'out-host', 'format-list', 'format-table', 'fl', 'ft', 'more']);              // stages that only show what they are fed
+const PS_FILE_READ = /\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadLines|OpenText)\(\s*(['"])(.+?)\1/gi;
+const PS_FILE_WRITE = /\[(?:System\.)?IO\.File\]::(?:Write|Append|Create|Open\b|Copy|Move|Delete|Replace)|\.Save\(|WriteAll/i;
+const PS_SAFE = /^[A-Za-z0-9_./:=+-]+\n?$/;
+class Op { constructor(v) { this.v = v; } }            // a token of the PowerShell line that is syntax: ; | && || ( ) { } &
+const psQuoteWord = w => (PS_SAFE.test(w) ? w : "'" + w.split("'").join("''") + "'");
+const psQuote = words => words.map(psQuoteWord).join(' ');
+// The words of a PowerShell line, quotes resolved ('' inside '...', "" and the backtick inside "...", the backtick outside), the syntax as
+// Op tokens (a newline is a `;`), a word starting with # a comment to the end of the line. A backslash is a letter.
+function psTokens(line) {
+  const out = []; let word = [], had = false, i = 0; const n = line.length;
+  while (i < n) {
+    const c = line[i];
+    if (c === "'" || c === '"') {
+      had = true; i++;
+      while (i < n) {
+        if (c === '"' && line[i] === '`' && i + 1 < n) { word.push(line[i + 1]); i += 2; }
+        else if (line[i] === c) {
+          if (line.slice(i + 1, i + 2) !== c) break;
+          word.push(c); i += 2;
+        } else { word.push(line[i]); i++; }
+      }
+      i++;
+      continue;
+    }
+    if (c === '`' && i + 1 < n) {
+      if (line[i + 1] !== '\n') { word.push(line[i + 1]); had = true; }
+      i += 2;
+      continue;
+    }
+    if (' \t\r\n'.includes(c) || (';|(){}&'.includes(c) && !(c === '&' && word.length && word[word.length - 1] === '>')) || (c === '#' && !had)) {
+      if (had) { out.push(word.join('')); word = []; had = false; }
+      if (c === '#') { i = line.indexOf('\n', i); if (i < 0) i = n; }
+      else if (c === '\n') { out.push(new Op(';')); i++; }
+      else if (';|(){}&'.includes(c)) {
+        const op = ['&&', '||'].includes(line.slice(i, i + 2)) ? line.slice(i, i + 2) : c;
+        out.push(new Op(op)); i += op.length;
+      } else i++;
+      continue;
+    }
+    word.push(c); had = true; i++;
+  }
+  if (had) out.push(word.join(''));
+  return out;
+}
+const QUIET_PS = /^(?:(?:\d|\*)?>&\d|(?:\d|\*)?>>?\$?(?:null|nul))$/i;       // stderr or all output thrown away
+// [[statement], writes]: each statement a list of pipeline stages, each stage a list of words (parentheses and braces are passed through,
+// redirections to $null left out); writes: a redirection into a file, or a cmdlet or call that writes.
+function psStatements(line) {
+  const statements = []; let stages = [], words = [], writes_ = false, skip = false;
+  const tokens = psTokens(line);
+  tokens.forEach((t, k) => {
+    if (skip) { skip = false; return; }
+    if (t instanceof Op) {
+      if (['(', ')', '{', '}'].includes(t.v) || (t.v === '&' && !words.length)) return;      // a group, or the call operator
+      if (words.length) stages.push(words);
+      words = [];
+      if (t.v !== '|') { if (stages.length) statements.push(stages); stages = []; }
+    } else if (QUIET_PS.test(t)) return;
+    else if (/^(?:\d|\*)?>>?$/.test(t)) {                                        // > target: the target is no word of the command
+      const nxt = k + 1 < tokens.length && !(tokens[k + 1] instanceof Op) ? tokens[k + 1] : '';
+      writes_ = writes_ || !['$null', 'nul'].includes(nxt.toLowerCase());
+      skip = Boolean(nxt);
+    } else if (/^(?:\d|\*)?>>?[^&]/.test(t)) writes_ = true;
+    else words.push(t);
+  });
+  if (words.length) stages.push(words);
+  if (stages.length) statements.push(stages);
+  writes_ = writes_ || statements.some(stmt => stmt.some(st => PS_WRITES.has(path.basename(st[0]).toLowerCase()))) || PS_FILE_WRITE.test(line);
+  return [statements, writes_];
+}
+const psPath = p => p.replace(/\\/g, '/');                                   // a PowerShell path as the rest of the guard reads it: with `/`
+// A word of a posix command in a PowerShell line: a path with backslashes in `/` (a pattern with regex syntax stays as it is).
+const psWord = w => (w.includes('\\') && !/[|()+^$[\]{}]/.test(w) ? psPath(w) : w);
+const psCommand = words => (words.length ? PS_ALIAS.get(path.basename(words[0]).toLowerCase()) ?? null : null);
+// [{parameter: its value, or true for a switch}, [the words that are no parameter]] of a cmdlet's arguments.
+function psArgs(canon, words) {
+  const [valued, switches] = PS_PARAMS[canon], known = new Set([...valued, ...switches]);
+  const named = {}, pos = []; let i = 1;
+  while (i < words.length) {
+    const m = /^-([A-Za-z]+)(?::([^\n]*))?$/.exec(words[i]);
+    const key = m ? m[1].toLowerCase() : null;
+    const near = key ? [...known].filter(x => x.startsWith(key)) : [];
+    const full = key && known.has(key) ? key : near.length === 1 ? near[0] : null;
+    if (full && valued.has(full)) {
+      named[full] = m[2] !== undefined ? m[2] : (i + 1 < words.length ? words[i + 1] : '');
+      i += m[2] !== undefined ? 1 : 2;
+    } else if (m) {
+      if (full) named[full] = true;
+      i++;
+    } else { pos.push(words[i]); i++; }
+  }
+  return [named, pos];
+}
+const psList = value => (typeof value === 'string' ? value.split(',').filter(v => v).map(psPath) : []);
+// The bash words that read what a PowerShell stage reads (Select-String as grep, Get-Content as cat, head or tail, Get-ChildItem as ls or
+// find), a posix command's own words with their paths in `/`; null when it is no read.
+function psBash(words) {
+  const canon = psCommand(words);
+  if (canon === null) return /^[\w.-]+$/.test(path.basename(words[0])) ? [words[0], ...words.slice(1).map(psWord)] : null;
+  const [named, pos] = psArgs(canon, words);
+  let p = named.path || named.literalpath;
+  if (canon === 'select-string') {
+    let pattern = named.pattern;
+    if (pattern === undefined && pos.length) pattern = pos.shift();
+    p = p || (pos.length ? pos[0] : null);
+    if (pattern === undefined || named.quiet) return null;
+    return ['grep', ...(named.casesensitive ? [] : ['-i']), ...(named.simplematch ? ['-F'] : []), ...(named.notmatch ? ['-v'] : []),
+      '-e', pattern, ...psList(named.include).map(g => '--include=' + g), ...psList(p)];
+  }
+  if (canon === 'get-content') {
+    const files = psList(p || (pos.length ? pos[0] : null));
+    const pick = keys => { const k = keys.find(x => x in named); return k === undefined ? null : named[k]; };
+    const head = pick(['totalcount', 'head', 'first']), tail = pick(['tail', 'last']);
+    for (const [tool, n] of [['head', head], ['tail', tail]]) if (typeof n === 'string' && /^\d+$/.test(n)) return [tool, '-n', n, ...files];
+    return ['cat', ...files];
+  }
+  const place = (psList(p || (pos.length ? pos[0] : null)).length ? psList(p || pos[0]) : ['.'])[0];
+  const glob_ = named.filter || psList(named.include)[0] || null;
+  if (named.directory || named.ad) return null;
+  return named.recurse || named.r || glob_ ? ['find', place, ...(glob_ ? ['-name', glob_] : [])] : ['ls', place];
+}
+// A stage after the first as the bash filter it equals ([] when it only shows what it is fed); null when it is anything else.
+function psFilter(words) {
+  const name = path.basename(words[0]).toLowerCase();
+  if (PS_IDENTITY.has(name)) return [];
+  if (name === 'measure-object' || name === 'measure') return ['wc', '-l'];
+  if (name === 'select-string' || name === 'sls') return psBash(words);
+  if (name === 'select-object' || name === 'select') {
+    const m = words.length === 3 && /^-(first|last)$/i.test(words[1]) && /^\d+$/.test(words[2]);
+    return m ? [words[1].toLowerCase() === '-first' ? 'head' : 'tail', '-n', words[2]] : null;
+  }
+  const bash = psBash(words);
+  return bash && FILTERS.has(path.basename(bash[0])) ? bash : null;
+}
+// [question, exact] for a pipeline of PowerShell stages that reads the code or the docs; exact: nothing is left after the ask (a stage that is
+// none of the equals above, or a filter the ask keeps, could not be run for it). null for a count or anything else.
+function psRead(stages, base) {
+  if (stages.some(st => st.some(w => /^\.(?:count|length)$/i.test(w)))) return null;     // (Get-Content f).Count: a count
+  const first = psBash(stages[0]);
+  if (!first || !first.length) return null;
+  const filters = []; let exact = true;
+  for (const st of stages.slice(1)) {
+    const f = psFilter(st);
+    if (f === null) { exact = false; break; }
+    if (f.length) filters.push(f);
+  }
+  if (['find', 'ls'].includes(first[0]) && !exact) return null;                          // a listing computed over: names, dates, sizes
+  if (counts(filters)) return null;
+  if (first[0] === 'find' && filters.length && filters[0][0] === 'grep' && !grepParts(filters[0])[1].length) {     // Select-String reads the files Get-ChildItem lists
+    let pattern = '*'; for (let j = 0; j < first.length; j++) if (first[j] === '-name' && j + 1 < first.length) { pattern = first[j + 1]; break; }
+    const q = some(grepQuestion([...filters[0], '-r', first[1], '--include=' + pattern], base));
+    return q ? [q, exact && filters.slice(1).every(f => ['head', 'tail'].includes(path.basename(f[0])))] : null;
+  }
+  const [q, kept] = folded(first, base, filters);
+  return q ? [q, exact && !kept.length] : null;
+}
+// [asks, pure]: each read of the code or the docs in a PowerShell line as the words of its ask, and whether the line is those reads only
+// (a cd followed); null when the line writes.
+function psPlan(line, cwd) {
+  const [statements, writes_] = psStatements(line);
+  if (writes_) return null;
+  let base = cwd, pure = true; const asks = [];
+  for (const stages of statements) {
+    const first = stages[0];
+    if (PS_CD.has(path.basename(first[0]).toLowerCase()) && first.length === 2 && stages.length === 1 && !first[1].includes('$')) {
+      base = path.resolve(base, expanduser(psPath(first[1])));
+      continue;
+    }
+    const found = psRead(stages, base);
+    if (found) { asks.push(found[0]); pure = pure && found[1]; } else pure = false;
+  }
+  for (const m of all(PS_FILE_READ, line)) {
+    const rel = inside(psPath(m[2]), cwd);
+    if (mapped(rel, false)) { asks.push([rel]); pure = false; }
+  }
+  return [asks, pure];
+}
+// The ask replacing a PowerShell line, or null when it may go ahead.
+function psQuestion(line, cwd) {
+  const plan = psPlan(line, cwd);
+  return plan && plan[0].length ? ASK + psQuote(plan[0].flat()) : null;
+}
+// The PowerShell line run in its place, each read as its ask, from the root; null when a step is more than a read.
+function psRewrite(line, cwd) {
+  const plan = psPlan(line, cwd);
+  if (!plan || !plan[0].length || !plan[1]) return null;
+  const text = plan[0].map(q => ASK + psQuote(q)).join('; ');
+  if (same_(cwd, ROOT)) return text;
+  return `Push-Location -LiteralPath ${psQuoteWord(ROOT.replace(/\\/g, '/'))}; try { ${text} } finally { Pop-Location }`;
+}
+// @end map.guard.commands.powershell
+
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
+// [grep's words, the folder] for `git [-C dir] [--no-pager] [-c k=v] grep ...`, else null.
+function gitGrep(words, base) {
+  let i = 1;
+  while (i < words.length && words[i].startsWith('-')) {
+    if (words[i] === '-C' && i + 1 < words.length) { base = path.resolve(base, expanduser(words[i + 1])); i += 2; }
+    else if (['-c', '--git-dir', '--work-tree', '--namespace'].includes(words[i]) && i + 1 < words.length) i += 2;
+    else i++;
+  }
+  return words[i] === 'grep' ? [['grep', '-r', ...words.slice(i + 1)], base] : null;
+}
 function question(words, base) {
   const tool = path.basename(words[0]);
-  if (tool === 'git' && words[1] === 'grep') return grepQuestion(['grep', '-r', ...words.slice(2)], base);
+  const git = tool === 'git' ? gitGrep(words, base) : null;
+  if (git) return grepQuestion(git[0], git[1], true);
   if (tool === 'xargs' && words.length > 1 && SEARCH.has(path.basename(words[1]))) return grepQuestion([...words.slice(1), '-r', '.'], base);
   if (SEARCH.has(tool)) return grepQuestion([tool, ...words.slice(1)], base);
   if (READ.has(tool)) return readQuestion([tool, ...words.slice(1)], base);
@@ -607,6 +848,21 @@ function question(words, base) {
 function counts(pipe) {
   return pipe.some(w => path.basename(w[0]) === 'wc' || (['grep', 'egrep', 'fgrep'].includes(path.basename(w[0])) && (grepParts(w)[3].has('c') || grepParts(w)[3].has('--count'))));
 }
+// [the question, the filters left] for a read and the filters its output feeds. `head` and `tail` are dropped: the ask's lines are its
+// answer, and a cut of them leaves its header and none of the code. A `cat` that feeds a search is that search over its files
+// (`cat f | grep x` -> `grep x f`), one that feeds `head` or `tail` is the range of its files.
+const some = a => (a && a.length ? a : null);
+function folded(words, base, run) {
+  let q = null;
+  if (path.basename(words[0]) === 'cat' && run.length) {
+    const files = readFiles(words)[1], first = run[0];
+    if (files.length && SEARCH.has(path.basename(first[0])) && !grepParts(first)[1].length) q = some(question([...first, ...files], base));
+    else if (files.length && ['head', 'tail'].includes(path.basename(first[0])) && !readFiles(first)[1].length) q = some(readQuestion([...first, ...files], base));
+    if (q) run = run.slice(1);
+  }
+  q = q || some(question(words, base));
+  return [q, run.filter(w => !['head', 'tail'].includes(path.basename(w[0])))];
+}
 function shellQuestion(line, cwd) {
   if (line.includes('map.py') || line.includes('map.mjs') || (ASK.startsWith('map ') && (' ' + line.split('\n')[0] + ' ').includes(' map '))) return null;
   if (lineWrites(line, cwd)) return null;                       // an edit: the reads beside it check it
@@ -615,15 +871,17 @@ function shellQuestion(line, cwd) {
     if (piped || words.some(w => ['>', '>>', '&>'].includes(w)) || !words.length) return;
     const after = k + 1 < parts.length ? parts[k + 1] : null;
     let q;
-    if (words[0] === 'find' && after && after[1] && after[0][0] === 'xargs' && after[0].length > 1 && SEARCH.has(path.basename(after[0][1]))) {
+    const xargs = words[0] === 'find' && after && after[1] && after[0][0] === 'xargs' && after[0].length > 1 && SEARCH.has(path.basename(after[0][1]));
+    if (xargs) {
       let pattern = '*'; words.forEach((a, j) => { if ((a === '-name' || a === '-iname') && j + 1 < words.length && pattern === '*') pattern = words[j + 1]; });
       const root = words.slice(1).find(a => !a.startsWith('-')) || '.';
       q = grepQuestion([...after[0].slice(1), '-r', root, '--include=' + pattern], base);
     } else q = question(words, base);
     if (!q) return;
-    const pipe = [];
+    let pipe = [];
     for (const [w, fed] of parts.slice(k + 1)) { if (!fed || !FILTERS.has(path.basename(w[0]))) break; pipe.push(w); }
     if (counts(pipe)) return;                                       // a count: nothing of the files is read
+    if (!xargs) [q, pipe] = folded(words, base, pipe);
     const own = path.basename(words[0]) in FILE_FILTERS ? fileFilter(words)[0] : null;   // cut -c1-9 file: the ask, then cut
     if (own || pipe.length) filtered.push(ASK + quote(q) + ' | ' + [...(own ? [own] : []), ...pipe].map(quote).join(' | ')); else asked = asked.concat(q);
   });
@@ -691,7 +949,7 @@ function normalise(agent, data) {
     let given = 'toolArgs' in data ? data.toolArgs : data.tool_input;
     if (typeof given === 'string') { try { given = JSON.parse(given); } catch { given = { command: given }; } }
     given = given || {};
-    return [{ bash: 'shell', powershell: 'shell', view: 'read', grep: 'grep', glob: 'glob' }[name] || null, given, cwd];
+    return [{ bash: 'shell', powershell: 'powershell', view: 'read', grep: 'grep', glob: 'glob' }[name] || null, given, cwd];
   }
   if (agent === 'gemini') {
     const name = String(data.tool_name || '').toLowerCase(), given = data.tool_input || {};
@@ -699,12 +957,13 @@ function normalise(agent, data) {
     return [kind, given, cwd];
   }
   const given = data.tool_input || {};
-  return [{ Bash: 'shell', Read: 'read', Grep: 'grep', Glob: 'glob' }[data.tool_name] || null, given, cwd];
+  return [{ Bash: 'shell', PowerShell: 'powershell', Read: 'read', Grep: 'grep', Glob: 'glob' }[data.tool_name] || null, given, cwd];
 }
 function replacement(agent, data) {
   const [kind, given, cwd] = normalise(agent, data);
   if (!given || typeof given !== 'object' || Array.isArray(given)) return null;
   if (kind === 'shell') return shellQuestion(given.command || given.cmd || '', cwd);
+  if (kind === 'powershell') return psQuestion(given.command || given.cmd || '', cwd);
   if (kind === 'read') { const paths = given.paths; const p = given.file_path || given.absolute_path || given.path || (Array.isArray(paths) && paths.length ? paths[0] : ''); return readQuestionTool(p, cwd, given.offset || given.start_line, given.limit || given.end_line); }
   const folder = given.path || given.dir_path || '.';   // Gemini names the folder dir_path
   if (kind === 'grep') {
@@ -722,12 +981,16 @@ function detect(data) {
   if (data.hook_event_name === 'BeforeTool') return 'gemini';
   return 'claude';
 }
+// Whether the call comes from a subagent: Claude Code adds `agent_id` (and `agent_type`, also given to a session started with --agent) to the
+// hook input of a subagent's tool calls.
+const subagent = data => Boolean(data.agent_id || data.agentId);
 function decide(agent, data) {
   const asked = replacement(agent, data);
   if (!asked) return null;
   const [kind, given, cwd] = normalise(agent, data);
   const command = given.command || '';
-  const line = agent === 'claude' && kind === 'shell' ? rewrite(command, cwd) : null;
+  const runs = agent === 'claude' && !(subagent(data) && SUBAGENTS === 'deny');    // a subagent is denied its read line, with the ask, to learn it
+  const line = runs ? (kind === 'shell' ? rewrite(command, cwd) : kind === 'powershell' ? psRewrite(command, cwd) : null) : null;
   if (line) return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'map-guard: read through the map',
     updatedInput: { ...given, command: line }, additionalContext: NOTE + line } };
   return answer(agent, asked, kind === 'shell' ? resend(command, cwd) : null);
@@ -740,7 +1003,7 @@ function answer(agent, asked, again = null) {
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
 }
 const SETTINGS = {
-  claude: ['.claude/settings.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash|Read|Grep|Glob', hooks: [{ type: 'command', command: `node "$CLAUDE_PROJECT_DIR/${me}"` }] }] } })],
+  claude: ['.claude/settings.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell|Read|Grep|Glob', hooks: [{ type: 'command', command: `node "$CLAUDE_PROJECT_DIR/${me}"` }] }] } })],
   codex: ['.codex/hooks.json', me => ({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node "$(git rev-parse --show-toplevel)/${me}" --agent codex`, statusMessage: 'map-guard' }] }] } })],
   cursor: ['.cursor/hooks.json', me => ({ version: 1, hooks: { beforeShellExecution: [{ command: `node ${me} --agent cursor` }], beforeReadFile: [{ command: `node ${me} --agent cursor` }] } })],
   copilot: ['.github/hooks/map-guard.json', me => ({ version: 1, hooks: { preToolUse: [{ type: 'command', bash: `node ${me} --agent copilot`, ...(WIN ? { powershell: `node ${me} --agent copilot` } : {}), cwd: '.', timeoutSec: 10 }] } })],   // Windows: the same command for PowerShell

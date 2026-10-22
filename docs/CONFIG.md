@@ -17,7 +17,7 @@ setting has a default; an unknown setting is refused with the list of the known 
   "tests": ["tests/**", "**/*.spec.ts"],
   "recipes": {"new-discount": {"about": "…", "words": "discount rule coupon", "steps": [["shop.prices.discounts", "add the rule"], ["docs/CART.md", "describe it"]]}},
   "strict": false,
-  "guard": {"skip": ["tests/fixtures/"]}
+  "guard": {"skip": ["tests/fixtures/"], "subagents": "deny"}
 }
 ```
 
@@ -36,6 +36,7 @@ setting has a default; an unknown setting is refused with the list of the known 
 | `recipes` | `{}` | the steps of a kind of change across layers, by name: `about` (one line), `words` (the task words that match it, two or more match), `checked` (the change it was checked against, optional), `steps` (a list of `[block id or file, what to do there]`), `note` (optional). `check` fails when a step names a block or a file that is gone |
 | `strict` | `false` | `check` also fails on code files that carry no tag yet: for CI, once everything is tagged |
 | `guard.skip` | `[]` | paths the guard leaves alone besides `ignore`: fixtures an agent may `cat`, data folders |
+| `guard.subagents` | `"deny"` | what Claude Code's guard does with a read line (a shell or PowerShell line made only of reads) from a subagent, which the hook input marks with `agent_id` (`agent_type` alone does not: it also names a session started with `--agent`). `"deny"`: the line is refused and the refusal gives the exact `ask` to run, so the subagent learns to use it; `"translate"`: it runs through the map in its place, as in the main session, which always translates. Any other value is `"deny"` |
 
 ## Areas, from folders
 

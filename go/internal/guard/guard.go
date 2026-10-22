@@ -20,6 +20,7 @@ var ROOT string
 var CFG map[string]any
 var ASK string
 var skipped []string
+var SUBAGENTS = "deny" // a subagent's read line: run in its place ("translate"), or denied with its ask
 var TEXT = map[string]bool{}
 var NAMED = set("Makefile GNUmakefile Dockerfile Containerfile Rakefile Gemfile Justfile Vagrantfile CMakeLists.txt Jenkinsfile")
 var SKIP = set("node_modules dist build out target vendor venv .venv __pycache__ .git .hg .svn .tox .mypy_cache .pytest_cache .cache coverage .idea .vscode bower_components .next .nuxt .terraform Pods DerivedData map")
@@ -73,6 +74,9 @@ func Setup() {
 		skipped = append(skipped, strs(g["skip"])...)
 	}
 	skipped = append(skipped, strs(CFG["ignore"])...)
+	if g, ok := CFG["guard"].(map[string]any); ok && g["subagents"] == "translate" {
+		SUBAGENTS = "translate"
+	}
 	if f, ok := CFG["forms"].(map[string]any); ok {
 		for k := range f {
 			TEXT[k] = true
@@ -708,6 +712,7 @@ func has(m map[string]bool, keys ...string) bool {
 
 var nameStrip = regexp.MustCompile(`^\^?\s*(?:(?:export|async|pub|public|private|static)\s+)*(?:function\*?|def|fn|func|class|const|let|var|val)\s+|(?:\\?\(|\\s\*=|\s*=|\\b)$`)
 var nameOK = regexp.MustCompile(`^[#.]?[A-Za-z_$][\w$-]*$`)
+// @map map.guard.commands.questions: the ask for each kind of read: grep and git grep, cat, sed, head and tail, ls and find
 var tagRx = regexp.MustCompile(`@map\s+([\w.-]+)`)
 var headingPat = regexp.MustCompile(`^\^#+.*$`)
 var basicRx = regexp.MustCompile(`\\([|(){}+?])|([|(){}+?])`)
@@ -759,7 +764,27 @@ func grepParts(words []string) (pats, paths, includes []string, flags map[string
 }
 
 func GrepQuestion(words []string, base string) []string {
+	return grepQuestion(words, base, false)
+}
+
+// grepQuestion: the ask for a grep-like search over the code or the docs, or nil when it searches elsewhere. git: `git grep`,
+// whose pathspecs with a wildcard and no `/` ('*.rs') match at any depth (they are includes, as grep's --include) and whose
+// magic pathspecs (':!tests') are left out.
+func grepQuestion(words []string, base string, git bool) []string {
 	pats, paths, includes, flags := grepParts(words)
+	if git {
+		var kept []string
+		for _, p := range paths {
+			bare := wildRx.MatchString(p) && !strings.Contains(p, "/")
+			if bare && !strings.HasPrefix(p, ":") {
+				includes = append(includes, p)
+			}
+			if !strings.HasPrefix(p, ":") && !bare {
+				kept = append(kept, p)
+			}
+		}
+		paths = kept
+	}
 	if has(flags, "c", "q", "l", "L", "--count", "--quiet", "--silent", "--files-with-matches", "--files-without-match") {
 		return nil
 	}
@@ -783,7 +808,7 @@ func GrepQuestion(words []string, base string) []string {
 	}
 	anyMapped := false
 	for _, r := range rels {
-		if Mapped(r.p, r.ok, true) {
+		if Mapped(r.p, r.ok, true) || mappedGlob(r.p, r.ok) {
 			anyMapped = true
 		}
 	}
@@ -878,6 +903,42 @@ func GrepQuestion(words []string, base string) []string {
 		out = append(out, "--in", strings.Join(places, ","))
 	}
 	return out
+}
+
+// mappedGlob: whether a path with a wildcard in a folder of it (src/**/*.rs) names a place the map reads: the folder before the
+// first wildcard segment is one (Mapped answers for a wildcard in the last segment only).
+func mappedGlob(rel string, ok bool) bool {
+	if !ok || !wildRx.MatchString(rel) {
+		return false
+	}
+	parts := strings.Split(rel, "/")
+	k := 0
+	for i, seg := range parts {
+		if wildRx.MatchString(seg) {
+			k = i
+			break
+		}
+	}
+	return k < len(parts)-1 && (k == 0 || Mapped(strings.Join(parts[:k], "/"), true, true))
+}
+
+// gitGrep: (grep's words, the folder) for `git [-C dir] [--no-pager] [-c k=v] grep ...`, else ok false.
+func gitGrep(words []string, base string) ([]string, string, bool) {
+	i := 1
+	for i < len(words) && strings.HasPrefix(words[i], "-") {
+		switch {
+		case words[i] == "-C" && i+1 < len(words):
+			base, i = joinPath(base, words[i+1]), i+2
+		case (words[i] == "-c" || words[i] == "--git-dir" || words[i] == "--work-tree" || words[i] == "--namespace") && i+1 < len(words):
+			i += 2
+		default:
+			i++
+		}
+	}
+	if i < len(words) && words[i] == "grep" {
+		return append([]string{"grep", "-r"}, words[i+1:]...), base, true
+	}
+	return nil, base, false
 }
 
 func unique(xs []string) []string {
@@ -1143,6 +1204,7 @@ func ListQuestion(words []string, base string) []string {
 	return out
 }
 
+// @end map.guard.commands.questions
 // @end map.guard.commands
 
 // @map map.guard.commands.scripts: a script that opens a file of the code only to print it: python -c, node -e, a heredoc fed to them, a scratch script run by name
@@ -1375,16 +1437,22 @@ func isMap(words []string) bool {
 // whole: whether the map answers all a read names: no file or folder of it would be left out of its ask.
 func whole(words []string, base string) bool {
 	tool := filepath.Base(words[0])
-	if tool == "git" && len(words) > 1 && words[1] == "grep" {
-		tool, words = "grep", words[1:]
+	git := false
+	if tool == "git" {
+		if gw, gb, ok := gitGrep(words, base); ok {
+			git, words, base, tool = true, gw, gb, "grep"
+		}
 	}
 	rest := append([]string{tool}, words[1:]...)
 	switch {
 	case SEARCH[tool]:
 		_, paths, _, _ := grepParts(rest)
 		for _, p := range paths {
+			if git && (strings.HasPrefix(p, ":") || (wildRx.MatchString(p) && !strings.Contains(p, "/"))) {
+				continue
+			}
 			r, ok := Inside(p, base)
-			if !Mapped(r, ok, true) {
+			if !Mapped(r, ok, true) && !mappedGlob(r, ok) {
 				return false
 			}
 		}
@@ -1774,16 +1842,17 @@ func filterOk(words []string) bool {
 
 // @end map.guard.commands.rewrite.readonly
 
-// chainRead: what a pipeline's first command is: "read" (with its ask and the steps it replaced) for a read the map answers,
-// "count" for one that only counts, "step" for anything else, "syntax" for a loop's keywords, an assignment or a cd.
-func chainRead(chain []step) (kind, ask string, used int) {
+// chainRead: what a pipeline's first command is: "read" (with its ask, the steps left after it and whether xargs ran it) for a
+// read the map answers, "count" for one that only counts, "step" for anything else, "syntax" for a loop's keywords, an
+// assignment or a cd.
+func chainRead(chain []step) (kind, ask string, left []step, xargs bool) {
 	first := chain[0]
 	words, base := first.words, first.base
 	if first.kind != "cmd" {
-		return "syntax", "", 1
+		return "syntax", "", nil, false
 	}
 	if first.redirected {
-		return "step", "", 1
+		return "step", "", nil, false
 	}
 	if filepath.Base(words[0]) == "find" && len(chain) > 1 && len(chain[1].words) > 1 && chain[1].words[0] == "xargs" && SEARCH[filepath.Base(chain[1].words[1])] {
 		pattern := "*"
@@ -1802,13 +1871,13 @@ func chainRead(chain []step) (kind, ask string, used int) {
 		}
 		q := GrepQuestion(append(append([]string{}, chain[1].words[1:]...), "-r", root, "--include="+pattern), base)
 		if len(q) > 0 {
-			return "read", ASK + Quote(q), 2
+			return "read", ASK + Quote(q), chain[2:], true
 		}
-		return "step", "", 1
+		return "step", "", nil, false
 	}
 	q := question(words, base)
 	if len(q) == 0 {
-		return "step", "", 1
+		return "step", "", nil, false
 	}
 	var run [][]string
 	for _, s := range chain[1:] {
@@ -1818,15 +1887,55 @@ func chainRead(chain []step) (kind, ask string, used int) {
 		run = append(run, s.words)
 	}
 	if counts(run) {
-		return "count", "", 1
+		return "count", "", nil, false
 	}
+	q, kept := folded(words, base, run)
 	own := ""
 	if FILE_FILTERS[filepath.Base(words[0])] != "" {
 		if keep, _, ok := fileFilter(words); ok {
 			own = " | " + Quote(keep)
 		}
 	}
-	return "read", ASK + Quote(q) + own, 1
+	for k, s := range chain[1:] {
+		if k >= len(run) {
+			left = append(left, s)
+		} else if kept[k] {
+			left = append(left, s)
+		}
+	}
+	return "read", ASK + Quote(q) + own, left, false
+}
+
+// folded: (the question, which of the filters its output feeds are kept) for a read. `head` and `tail` are dropped: the ask's
+// lines are its answer, and a cut of them leaves its header and none of the code. A `cat` that feeds a search is that search
+// over its files (`cat f | grep x` becomes `grep x f`), one that feeds `head` or `tail` is the range of its files.
+func folded(words []string, base string, run [][]string) ([]string, map[int]bool) {
+	var q []string
+	from := 0
+	if filepath.Base(words[0]) == "cat" && len(run) > 0 {
+		_, _, files := readFiles(words)
+		first := run[0]
+		if len(files) > 0 && SEARCH[filepath.Base(first[0])] && func() bool { _, p, _, _ := grepParts(first); return len(p) == 0 }() {
+			q = question(append(append([]string{}, first...), files...), base)
+		} else if len(files) > 0 && filepath.Base(first[0]) == "head" || len(files) > 0 && filepath.Base(first[0]) == "tail" {
+			if _, _, ff := readFiles(first); len(ff) == 0 {
+				q = ReadQuestion(append(append([]string{}, first...), files...), base)
+			}
+		}
+		if len(q) > 0 {
+			from = 1
+		}
+	}
+	if len(q) == 0 {
+		q = question(words, base)
+	}
+	kept := map[int]bool{}
+	for k := from; k < len(run); k++ {
+		if b := filepath.Base(run[k][0]); b != "head" && b != "tail" {
+			kept[k] = true
+		}
+	}
+	return q, kept
 }
 
 // built: the line rebuilt: its text, whether a read was replaced, ok (every step only reads) and pure (reads and their
@@ -1852,8 +1961,12 @@ func rebuild(line, cwd string, inPlace bool) *built {
 			j++
 		}
 		chain, first := st[k:j], st[k]
-		kind, ask, used := chainRead(chain)
-		for _, s := range chain[used:] {
+		kind, ask, left, xargs := chainRead(chain)
+		rest := chain[1:]
+		if kind == "read" {
+			rest = left
+		}
+		for _, s := range rest {
 			allOk = allOk && len(s.words) > 0 && filterOk(s.words) && !s.redirected
 			pure = pure && len(s.words) > 0 && FILTERS[filepath.Base(s.words[0])]
 		}
@@ -1865,15 +1978,16 @@ func rebuild(line, cwd string, inPlace bool) *built {
 			out = append(out, first)
 		case "read":
 			replaced = true
-			allOk = allOk && used == 1 && whole(first.words, first.base) // xargs could run anything
+			allOk = allOk && !xargs && whole(first.words, first.base) // xargs could run anything
+			trail := first.trail
 			if inPlace {
-				first.text = first.lead + first.prefix + ask + first.trail
+				first.text = first.lead + first.prefix + ask + trail
 			} else {
-				first.text = first.lead + first.prefix + anchored(first.base, ask) + first.trail
+				first.text = first.lead + first.prefix + anchored(first.base, ask) + trail
 			}
 			first.hasText = true
 			out = append(out, first)
-			if used == 2 {
+			if xargs {
 				own := chain[1]
 				own.drop = "own"
 				out = append(out, own)
@@ -1897,7 +2011,7 @@ func rebuild(line, cwd string, inPlace bool) *built {
 			first.text, first.hasText = text, true
 			out = append(out, first)
 		}
-		out = append(out, chain[used:]...)
+		out = append(out, rest...)
 		k = j
 	}
 	var b strings.Builder
@@ -1942,13 +2056,577 @@ func resend(line, cwd string) string {
 
 // @end map.guard.commands.rewrite
 
+// @map map.guard.commands.powershell: a PowerShell line into its statements, and Select-String, Get-Content and Get-ChildItem (with their aliases) as the bash read each equals, so one rule answers both shells
+var psAlias = map[string]string{"select-string": "select-string", "sls": "select-string", "get-content": "get-content", "gc": "get-content", "cat": "get-content",
+	"type": "get-content", "get-childitem": "get-childitem", "gci": "get-childitem", "ls": "get-childitem", "dir": "get-childitem"}
+
+// psValued and psSwitches: a cmdlet's parameters that take a value, and its switches (a prefix that names one only is read as it).
+var psValued = map[string]map[string]bool{
+	"select-string": set("pattern path literalpath include exclude context encoding inputobject culture"),
+	"get-content":   set("path literalpath totalcount head first tail last readcount encoding delimiter filter include exclude stream"),
+	"get-childitem": set("path literalpath filter include exclude depth attributes"),
+}
+var psSwitches = map[string]map[string]bool{
+	"select-string": set("simplematch casesensitive notmatch allmatches list quiet raw noemphasis"),
+	"get-content":   set("raw wait force asbytestream"),
+	"get-childitem": set("recurse r name force file directory hidden readonly system followsymlink ad af"),
+}
+var psCD = set("cd chdir set-location sl push-location pushd")
+var psWrites = set("set-content add-content out-file tee-object tee remove-item copy-item move-item new-item clear-content rename-item set-item sc ac ri rm del erase rd rmdir cp copy mv move ni rni patch")
+var psIdentity = set("out-string out-host format-list format-table fl ft more") // stages that only show what they are fed
+var psFileRead = regexp.MustCompile(`(?i)\[(?:System\.)?IO\.File\]::(?:ReadAllText|ReadAllLines|ReadLines|OpenText)\(\s*(?:'(.+?)'|"(.+?)")`)
+var psFileWrite = regexp.MustCompile(`(?i)\[(?:System\.)?IO\.File\]::(?:Write|Append|Create|Open\b|Copy|Move|Delete|Replace)|\.Save\(|WriteAll`)
+var psSafe = regexp.MustCompile(`^[A-Za-z0-9_./:=+-]+\n?$`)
+var psQuiet = regexp.MustCompile(`(?i)^(?:(?:\d|\*)?>&\d|(?:\d|\*)?>>?\$?(?:null|nul))$`) // stderr or all output thrown away
+var psRedir = regexp.MustCompile(`^(?:\d|\*)?>>?$`)
+var psRedirText = regexp.MustCompile(`^(?:\d|\*)?>>?[^&]`)
+var psParam = regexp.MustCompile(`^-([A-Za-z]+)(?::(.*))?$`)
+var psCount = regexp.MustCompile(`(?i)^\.(?:count|length)$`)
+var psPlainName = regexp.MustCompile(`^[\p{L}\p{N}_.-]+$`)
+var psFirstLast = regexp.MustCompile(`(?i)^-(first|last)$`)
+var psRegexy = regexp.MustCompile(`[|()+^$\[\]{}]`)
+
+// psTok: a token of the PowerShell line; op: it is syntax (; | && || ( ) { } &).
+type psTok struct {
+	s  string
+	op bool
+}
+
+// baseName: os.path.basename: what follows the last separator ("" for an empty path or one ending in a separator).
+func baseName(p string) string {
+	seps := "/"
+	if runtime.GOOS == "windows" {
+		seps = `/\`
+	}
+	return p[strings.LastIndexAny(p, seps)+1:]
+}
+
+// psQuoteWord: a word quoted for PowerShell: as it is when it is safe, else in single quotes (a quote doubled).
+func psQuoteWord(w string) string {
+	if psSafe.MatchString(w) {
+		return w
+	}
+	return "'" + strings.ReplaceAll(w, "'", "''") + "'"
+}
+
+func psQuote(words []string) string {
+	var out []string
+	for _, w := range words {
+		out = append(out, psQuoteWord(w))
+	}
+	return strings.Join(out, " ")
+}
+
+// psTokens: the words of a PowerShell line, quotes resolved (a doubled quote inside '...', "" and the backtick inside "...", the
+// backtick outside), the syntax as op tokens (a newline is a `;`), a word starting with # a comment to the end of the line.
+// A backslash is a letter.
+func psTokens(line string) []psTok {
+	var out []psTok
+	var word []byte
+	had := false
+	i, n := 0, len(line)
+	for i < n {
+		c := line[i]
+		if c == '\'' || c == '"' {
+			had, i = true, i+1
+			for i < n {
+				if c == '"' && line[i] == '`' && i+1 < n {
+					word = append(word, line[i+1])
+					i += 2
+				} else if line[i] == c {
+					if !(i+1 < n && line[i+1] == c) {
+						break
+					}
+					word = append(word, c)
+					i += 2
+				} else {
+					word = append(word, line[i])
+					i++
+				}
+			}
+			i++
+			continue
+		}
+		if c == '`' && i+1 < n {
+			if line[i+1] != '\n' {
+				word = append(word, line[i+1])
+				had = true
+			}
+			i += 2
+			continue
+		}
+		isOp := strings.IndexByte(";|(){}&", c) >= 0
+		if c == ' ' || c == '\t' || c == '\r' || c == '\n' || (isOp && !(c == '&' && len(word) > 0 && word[len(word)-1] == '>')) || (c == '#' && !had) {
+			if had {
+				out = append(out, psTok{string(word), false})
+				word, had = nil, false
+			}
+			switch {
+			case c == '#':
+				j := strings.IndexByte(line[i:], '\n')
+				if j < 0 {
+					i = n
+				} else {
+					i += j
+				}
+			case c == '\n':
+				out = append(out, psTok{";", true})
+				i++
+			case isOp:
+				op := string(c)
+				if i+1 < n && (line[i:i+2] == "&&" || line[i:i+2] == "||") {
+					op = line[i : i+2]
+				}
+				out = append(out, psTok{op, true})
+				i += len(op)
+			default:
+				i++
+			}
+			continue
+		}
+		word = append(word, c)
+		had = true
+		i++
+	}
+	if had {
+		out = append(out, psTok{string(word), false})
+	}
+	return out
+}
+
+// psStatements: ([statement], writes): each statement a list of pipeline stages, each stage a list of words (parentheses and braces
+// are passed through, redirections to $null left out); writes: a redirection into a file, or a cmdlet or call that writes.
+func psStatements(line string) ([][][]string, bool) {
+	var statements [][][]string
+	var stages [][]string
+	var words []string
+	writes_, skip := false, false
+	tokens := psTokens(line)
+	for k, t := range tokens {
+		switch {
+		case skip:
+			skip = false
+		case t.op:
+			if t.s == "(" || t.s == ")" || t.s == "{" || t.s == "}" || (t.s == "&" && len(words) == 0) {
+				continue // a group, or the call operator
+			}
+			if len(words) > 0 {
+				stages = append(stages, words)
+			}
+			words = nil
+			if t.s != "|" {
+				if len(stages) > 0 {
+					statements = append(statements, stages)
+				}
+				stages = nil
+			}
+		case psQuiet.MatchString(t.s):
+			continue
+		case psRedir.MatchString(t.s): // > target: the target is no word of the command
+			nxt := ""
+			if k+1 < len(tokens) && !tokens[k+1].op {
+				nxt = tokens[k+1].s
+			}
+			low := strings.ToLower(nxt)
+			writes_ = writes_ || (low != "$null" && low != "nul")
+			skip = nxt != ""
+		case psRedirText.MatchString(t.s):
+			writes_ = true
+		default:
+			words = append(words, t.s)
+		}
+	}
+	if len(words) > 0 {
+		stages = append(stages, words)
+	}
+	if len(stages) > 0 {
+		statements = append(statements, stages)
+	}
+	for _, stmt := range statements {
+		for _, st := range stmt {
+			if psWrites[strings.ToLower(baseName(st[0]))] {
+				writes_ = true
+			}
+		}
+	}
+	return statements, writes_ || psFileWrite.MatchString(line)
+}
+
+// psPath: a PowerShell path as the rest of the guard reads it: with `/`.
+func psPath(p string) string { return strings.ReplaceAll(p, `\`, "/") }
+
+// psWord: a word of a posix command in a PowerShell line: a path with backslashes in `/` (a pattern with regex syntax stays as it is).
+func psWord(w string) string {
+	if strings.Contains(w, `\`) && !psRegexy.MatchString(w) {
+		return psPath(w)
+	}
+	return w
+}
+
+func psCommand(words []string) string {
+	if len(words) == 0 {
+		return ""
+	}
+	return psAlias[strings.ToLower(baseName(words[0]))]
+}
+
+// psVal: a parameter's value: its text (str), or a switch (sw).
+type psVal struct {
+	s   string
+	str bool
+	sw  bool
+}
+
+func (v psVal) truthy() bool { return v.sw || (v.str && v.s != "") }
+
+// psArgs: ({parameter: its value, or a switch}, [the words that are no parameter]) of a cmdlet's arguments.
+func psArgs(canon string, words []string) (map[string]psVal, []string) {
+	valued, switches := psValued[canon], psSwitches[canon]
+	named, pos := map[string]psVal{}, []string{}
+	for i := 1; i < len(words); {
+		m := psParam.FindStringSubmatchIndex(words[i])
+		key := ""
+		if m != nil {
+			key = strings.ToLower(words[i][m[2]:m[3]])
+		}
+		full := ""
+		if key != "" {
+			if valued[key] || switches[key] {
+				full = key
+			} else {
+				var near []string
+				for x := range valued {
+					if strings.HasPrefix(x, key) {
+						near = append(near, x)
+					}
+				}
+				for x := range switches {
+					if strings.HasPrefix(x, key) {
+						near = append(near, x)
+					}
+				}
+				if len(near) == 1 {
+					full = near[0]
+				}
+			}
+		}
+		switch {
+		case full != "" && valued[full]:
+			if m[4] >= 0 { // -Path:value
+				named[full] = psVal{s: words[i][m[4]:m[5]], str: true}
+				i++
+			} else {
+				v := ""
+				if i+1 < len(words) {
+					v = words[i+1]
+				}
+				named[full] = psVal{s: v, str: true}
+				i += 2
+			}
+		case m != nil:
+			if full != "" {
+				named[full] = psVal{sw: true}
+			}
+			i++
+		default:
+			pos = append(pos, words[i])
+			i++
+		}
+	}
+	return named, pos
+}
+
+// psList: the comma-separated paths of a parameter's value, with `/`.
+func psList(value psVal) []string {
+	var out []string
+	if !value.str {
+		return out
+	}
+	for _, v := range strings.Split(value.s, ",") {
+		if v != "" {
+			out = append(out, psPath(v))
+		}
+	}
+	return out
+}
+
+func psIsDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// @map map.guard.commands.powershell.read: a PowerShell stage as the bash read it equals, the filters after it, the line's asks and the line run in its place
+// psBash: the bash words that read what a PowerShell stage reads (Select-String as grep, Get-Content as cat, head or tail,
+// Get-ChildItem as ls or find), a posix command's own words with their paths in `/`; nil when it is no read.
+func psBash(words []string) []string {
+	canon := psCommand(words)
+	if canon == "" {
+		if !psPlainName.MatchString(baseName(words[0])) {
+			return nil
+		}
+		out := []string{words[0]}
+		for _, w := range words[1:] {
+			out = append(out, psWord(w))
+		}
+		return out
+	}
+	named, pos := psArgs(canon, words)
+	// the path: Python's `path or literalpath or the first word that is no parameter`
+	path := func() psVal {
+		for _, k := range []string{"path", "literalpath"} {
+			if v := named[k]; v.truthy() {
+				return v
+			}
+		}
+		if len(pos) > 0 {
+			return psVal{s: pos[0], str: true}
+		}
+		return psVal{}
+	}
+	switch canon {
+	case "select-string":
+		pattern, hasPattern := "", false
+		if v, ok := named["pattern"]; ok {
+			pattern, hasPattern = v.s, true
+		}
+		if !hasPattern && len(pos) > 0 {
+			pattern, hasPattern, pos = pos[0], true, pos[1:]
+		}
+		if !hasPattern || named["quiet"].truthy() {
+			return nil
+		}
+		out := []string{"grep"}
+		if !named["casesensitive"].truthy() {
+			out = append(out, "-i")
+		}
+		if named["simplematch"].truthy() {
+			out = append(out, "-F")
+		}
+		if named["notmatch"].truthy() {
+			out = append(out, "-v")
+		}
+		out = append(out, "-e", pattern)
+		for _, g := range psList(named["include"]) {
+			out = append(out, "--include="+g)
+		}
+		return append(out, psList(path())...)
+	case "get-content":
+		files := psList(path())
+		for _, t := range []struct {
+			tool string
+			keys []string
+		}{{"head", []string{"totalcount", "head", "first"}}, {"tail", []string{"tail", "last"}}} {
+			for _, k := range t.keys {
+				if v, ok := named[k]; ok {
+					if v.str && psIsDigits(v.s) {
+						return append([]string{t.tool, "-n", v.s}, files...)
+					}
+					break
+				}
+			}
+		}
+		return append([]string{"cat"}, files...)
+	}
+	place := "."
+	if l := psList(path()); len(l) > 0 {
+		place = l[0]
+	}
+	glob := ""
+	if f := named["filter"]; f.truthy() {
+		glob = f.s
+	} else if l := psList(named["include"]); len(l) > 0 {
+		glob = l[0]
+	}
+	if named["directory"].truthy() || named["ad"].truthy() {
+		return nil
+	}
+	if named["recurse"].truthy() || named["r"].truthy() || glob != "" {
+		out := []string{"find", place}
+		if glob != "" {
+			out = append(out, "-name", glob)
+		}
+		return out
+	}
+	return []string{"ls", place}
+}
+
+// psFilter: a stage after the first as the bash filter it equals (no words, with ok, when it only shows what it is fed); ok false
+// when it is anything else.
+func psFilter(words []string) ([]string, bool) {
+	name := strings.ToLower(baseName(words[0]))
+	if psIdentity[name] {
+		return nil, true
+	}
+	if name == "measure-object" || name == "measure" {
+		return []string{"wc", "-l"}, true
+	}
+	if name == "select-string" || name == "sls" {
+		b := psBash(words)
+		return b, b != nil
+	}
+	if name == "select-object" || name == "select" {
+		if len(words) == 3 && psFirstLast.MatchString(words[1]) && psIsDigits(words[2]) {
+			tool := "tail"
+			if strings.ToLower(words[1]) == "-first" {
+				tool = "head"
+			}
+			return []string{tool, "-n", words[2]}, true
+		}
+		return nil, false
+	}
+	b := psBash(words)
+	if len(b) > 0 && FILTERS[baseName(b[0])] {
+		return b, true
+	}
+	return nil, false
+}
+
+// psRead: (question, exact) for a pipeline of PowerShell stages that reads the code or the docs; exact: nothing is left after the
+// ask (a stage that is none of the equals above, or a filter the ask keeps, could not be run for it). found is false for a count
+// or anything else.
+func psRead(stages [][]string, base string) (q []string, exact, found bool) {
+	for _, st := range stages {
+		for _, w := range st {
+			if psCount.MatchString(w) {
+				return nil, false, false // (Get-Content f).Count: a count
+			}
+		}
+	}
+	first := psBash(stages[0])
+	if len(first) == 0 {
+		return nil, false, false
+	}
+	var filters [][]string
+	exact = true
+	for _, st := range stages[1:] {
+		f, ok := psFilter(st)
+		if !ok {
+			exact = false
+			break
+		}
+		if len(f) > 0 {
+			filters = append(filters, f)
+		}
+	}
+	if (first[0] == "find" || first[0] == "ls") && !exact {
+		return nil, false, false // a listing computed over: names, dates, sizes
+	}
+	if counts(filters) {
+		return nil, false, false
+	}
+	if first[0] == "find" && len(filters) > 0 && filters[0][0] == "grep" {
+		if _, p, _, _ := grepParts(filters[0]); len(p) == 0 { // Select-String reads the files Get-ChildItem lists
+			pattern := "*"
+			for j, a := range first {
+				if a == "-name" && j+1 < len(first) {
+					pattern = first[j+1]
+					break
+				}
+			}
+			q = GrepQuestion(append(append([]string{}, filters[0]...), "-r", first[1], "--include="+pattern), base)
+			if len(q) == 0 {
+				return nil, false, false
+			}
+			ex := exact
+			for _, f := range filters[1:] {
+				if b := baseName(f[0]); b != "head" && b != "tail" {
+					ex = false
+				}
+			}
+			return q, ex, true
+		}
+	}
+	q, kept := folded(first, base, filters)
+	if len(q) == 0 {
+		return nil, false, false
+	}
+	return q, exact && len(kept) == 0, true
+}
+
+// psPlan: (asks, pure, ok): each read of the code or the docs in a PowerShell line as the words of its ask, and whether the line is
+// those reads only (a cd followed); ok is false when the line writes.
+func psPlan(line, cwd string) ([][]string, bool, bool) {
+	statements, writes_ := psStatements(line)
+	if writes_ {
+		return nil, false, false
+	}
+	base, pure := cwd, true
+	var asks [][]string
+	for _, stages := range statements {
+		first := stages[0]
+		if psCD[strings.ToLower(baseName(first[0]))] && len(first) == 2 && len(stages) == 1 && !strings.Contains(first[1], "$") {
+			base = joinPath(base, psPath(first[1]))
+			continue
+		}
+		if q, exact, found := psRead(stages, base); found {
+			asks = append(asks, q)
+			pure = pure && exact
+		} else {
+			pure = false
+		}
+	}
+	for _, m := range psFileRead.FindAllStringSubmatch(line, -1) {
+		lit := m[1]
+		if lit == "" {
+			lit = m[2]
+		}
+		rel, ok := Inside(psPath(lit), cwd)
+		if Mapped(rel, ok, false) {
+			asks = append(asks, []string{rel})
+			pure = false
+		}
+	}
+	return asks, pure, true
+}
+
+// psQuestion: the ask replacing a PowerShell line, or "" when it may go ahead.
+func psQuestion(line, cwd string) string {
+	asks, _, ok := psPlan(line, cwd)
+	if !ok || len(asks) == 0 {
+		return ""
+	}
+	var all []string
+	for _, a := range asks {
+		all = append(all, a...)
+	}
+	return ASK + psQuote(all)
+}
+
+// psRewrite: the PowerShell line run in its place, each read as its ask, from the root; "" when a step is more than a read.
+func psRewrite(line, cwd string) string {
+	asks, pure, ok := psPlan(line, cwd)
+	if !ok || len(asks) == 0 || !pure {
+		return ""
+	}
+	var parts []string
+	for _, q := range asks {
+		parts = append(parts, ASK+psQuote(q))
+	}
+	text := strings.Join(parts, "; ")
+	if realpath(cwd) == realpath(ROOT) {
+		return text
+	}
+	return "Push-Location -LiteralPath " + psQuoteWord(strings.ReplaceAll(ROOT, `\`, "/")) + "; try { " + text + " } finally { Pop-Location }"
+}
+
+// @end map.guard.commands.powershell.read
+// @end map.guard.commands.powershell
+
 // @map map.guard.decide: each agent's input read into one shape, the ask that replaces the call, and the answer in the agent's format
 // @map map.guard.decide.question: the map question of a command and of a whole shell line, with the filters and counts that go with it
 func question(words []string, base string) []string {
 	tool := filepath.Base(words[0])
 	switch {
-	case tool == "git" && len(words) > 1 && words[1] == "grep":
-		return GrepQuestion(append([]string{"grep", "-r"}, words[2:]...), base)
+	case tool == "git" && func() bool { _, _, ok := gitGrep(words, base); return ok }():
+		gw, gb, _ := gitGrep(words, base)
+		return grepQuestion(gw, gb, true)
 	case tool == "xargs" && len(words) > 1 && SEARCH[filepath.Base(words[1])]:
 		return GrepQuestion(append(append([]string{}, words[1:]...), "-r", "."), base)
 	case SEARCH[tool]:
@@ -2007,7 +2685,8 @@ func ShellQuestion(line, cwd string) string {
 		if k+1 < len(parts) {
 			after = &parts[k+1]
 		}
-		if c.words[0] == "find" && after != nil && after.piped && len(after.words) > 1 && after.words[0] == "xargs" && SEARCH[filepath.Base(after.words[1])] {
+		xargs := c.words[0] == "find" && after != nil && after.piped && len(after.words) > 1 && after.words[0] == "xargs" && SEARCH[filepath.Base(after.words[1])]
+		if xargs {
 			pattern := "*"
 			for j, a := range c.words {
 				if (a == "-name" || a == "-iname") && j+1 < len(c.words) && pattern == "*" {
@@ -2041,6 +2720,17 @@ func ShellQuestion(line, cwd string) string {
 		}
 		if counts(run) {
 			continue // a count: nothing of the files is read
+		}
+		if !xargs {
+			var kept map[int]bool
+			q, kept = folded(c.words, c.base, run)
+			var left []command
+			for i, w := range pipe {
+				if kept[i] {
+					left = append(left, w)
+				}
+			}
+			pipe = left
 		}
 		var qs []string
 		if FILE_FILTERS[filepath.Base(c.words[0])] != "" { // cut -c1-9 file: the ask, then cut
@@ -2152,7 +2842,7 @@ func normalise(agent string, data map[string]any) (string, map[string]any, strin
 		if given == nil {
 			given = map[string]any{}
 		}
-		kind := map[string]string{"bash": "shell", "powershell": "shell", "view": "read", "grep": "grep", "glob": "glob"}[name]
+		kind := map[string]string{"bash": "shell", "powershell": "powershell", "view": "read", "grep": "grep", "glob": "glob"}[name]
 		return kind, given, cwd
 	case "gemini":
 		name := strings.ToLower(str(data["tool_name"]))
@@ -2179,7 +2869,7 @@ func normalise(agent string, data map[string]any) (string, map[string]any, strin
 	if given == nil {
 		given = map[string]any{}
 	}
-	kind := map[string]string{"Bash": "shell", "Read": "read", "Grep": "grep", "Glob": "glob"}[str(data["tool_name"])]
+	kind := map[string]string{"Bash": "shell", "PowerShell": "powershell", "Read": "read", "Grep": "grep", "Glob": "glob"}[str(data["tool_name"])]
 	return kind, given, cwd
 }
 
@@ -2272,6 +2962,12 @@ func Replacement(agent string, data map[string]any) string {
 			cmd = str(given["cmd"])
 		}
 		return ShellQuestion(cmd, cwd)
+	case "powershell":
+		cmd := str(given["command"])
+		if cmd == "" {
+			cmd = str(given["cmd"])
+		}
+		return psQuestion(cmd, cwd)
 	case "read":
 		p := str(given["file_path"])
 		if p == "" {
@@ -2339,6 +3035,12 @@ func Detect(data map[string]any) string {
 	return "claude"
 }
 
+// subagent: whether the call comes from a subagent: Claude Code adds `agent_id` (and `agent_type`, also given to a session started
+// with --agent) to the hook input of a subagent's tool calls.
+func subagent(data map[string]any) bool {
+	return truthy(data["agent_id"]) || truthy(data["agentId"])
+}
+
 // Decide: the hook's answer for this call, or nil when it goes ahead: in Claude Code a shell line of reads only runs
 // through the map in its place; any other read of the code or the docs is refused with its ask.
 func Decide(agent string, data map[string]any) map[string]any {
@@ -2348,8 +3050,11 @@ func Decide(agent string, data map[string]any) map[string]any {
 	}
 	kind, given, cwd := normalise(agent, data)
 	line := ""
-	if agent == "claude" && kind == "shell" {
+	runs := agent == "claude" && !(subagent(data) && SUBAGENTS == "deny") // a subagent is denied its read line, with the ask, to learn it
+	if runs && kind == "shell" {
 		line = rewrite(str(given["command"]), cwd)
+	} else if runs && kind == "powershell" {
+		line = psRewrite(str(given["command"]), cwd)
 	}
 	if line != "" {
 		in := map[string]any{}
@@ -2412,7 +3117,7 @@ type setting struct {
 
 var settings = map[string]setting{
 	"claude": {".claude/settings.json", func(me string) map[string]any {
-		return map[string]any{"hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Bash|Read|Grep|Glob", "hooks": []any{map[string]any{"type": "command", "command": `"$CLAUDE_PROJECT_DIR/` + me + `"`}}}}}}
+		return map[string]any{"hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Bash|PowerShell|Read|Grep|Glob", "hooks": []any{map[string]any{"type": "command", "command": `"$CLAUDE_PROJECT_DIR/` + me + `"`}}}}}}
 	}},
 	"codex": {".codex/hooks.json", func(me string) map[string]any {
 		return map[string]any{"hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Bash", "hooks": []any{map[string]any{"type": "command", "command": `"$(git rev-parse --show-toplevel)/` + me + `" --agent codex`, "statusMessage": "map-guard"}}}}}}
@@ -2510,6 +3215,16 @@ func Install(agent string) {
 	fmt.Println(msg)
 }
 
+// safeDecide: Decide, where a failure lets the call go ahead (as the reference's catch-all does).
+func safeDecide(agent string, data map[string]any) (out map[string]any) {
+	defer func() {
+		if recover() != nil {
+			out = nil
+		}
+	}()
+	return Decide(agent, data)
+}
+
 // Main is what cmd/map-guard runs: stdin in, the decision out.
 func Main(argv []string) {
 	Setup()
@@ -2545,7 +3260,7 @@ func Main(argv []string) {
 	if agent == "" {
 		agent = Detect(data)
 	}
-	if out := Decide(agent, data); out != nil {
+	if out := safeDecide(agent, data); out != nil {
 		fmt.Println(JSON(out, ""))
 	}
 }

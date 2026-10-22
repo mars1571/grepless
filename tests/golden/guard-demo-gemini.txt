@@ -38,7 +38,7 @@
 == mixed line: git status -s; grep -rn coupon src 2>/dev/null | head -3; cargo test (rc=0)
 {
  "decision": "deny",
- "reason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  git status -s; <map> ask coupon --in src | head -3; cargo test"
+ "reason": "This repository's code and docs are read and located through its map, every question of a round in one call (AGENTS.md, \"Finding code\"); it answers what this would, by block, with the code. None of this command ran: send this line instead, its reads already through the map. Run instead:\n  git status -s; <map> ask coupon --in src ; cargo test"
 }
 == read-only steps: which python3; sed -n 1,5p src/shop/cart.py; pwd (rc=0)
 {
